@@ -178,7 +178,8 @@ function plan() {
 /* ================= sound ================= */
 let AC = null;
 const BUF = {};
-const SOUND_FILES = ['move', 'move-opp', 'capture', 'castle', 'check', 'promote', 'game-end', 'illegal'];
+// real recordings of wooden pieces (Stefan Haack, chess-console, CC BY 4.0); see sounds/CREDITS.txt
+const SOUND_FILES = ['move', 'move-opp', 'capture', 'castle', 'check', 'promote', 'illegal'];
 let soundSide = 'w'; // the colour you are playing on the current screen
 function audio() {
   try {
@@ -209,28 +210,14 @@ function moveSound(m) {
   if (!m) return;
   const san = m.san || '', fl = m.flags || '';
   const n = /[+#]/.test(san) ? 'check' : m.promotion ? 'promote' : /[kq]/.test(fl) ? 'castle' : m.captured ? 'capture' : m.color && m.color !== soundSide ? 'move-opp' : 'move';
-  if (!play(n)) { if (m.captured) { knock(650, 1.8); knock(1400, 0.9); } else knock(1150, 1.5); }
+  play(n);
 }
-function tone(f, d, type = 'sine', v = 0.12, at = 0) {
-  const a = S.sound && AC; if (!a) return;
-  const t = a.currentTime + at, o = a.createOscillator(), g = a.createGain();
-  o.type = type; o.frequency.setValueAtTime(f, t);
-  g.gain.setValueAtTime(v, t); g.gain.exponentialRampToValueAtTime(1e-4, t + d);
-  o.connect(g).connect(a.destination); o.start(t); o.stop(t + d + 0.05);
-}
-function knock(f, v) {
-  const a = S.sound && AC; if (!a) return;
-  const n = Math.floor(a.sampleRate * 0.07), b = a.createBuffer(1, n, a.sampleRate), x = b.getChannelData(0);
-  for (let i = 0; i < n; i++) x[i] = (Math.random() * 2 - 1) * (1 - i / n) ** 5;
-  const s = a.createBufferSource(), bp = a.createBiquadFilter(), g = a.createGain();
-  s.buffer = b; bp.type = 'bandpass'; bp.frequency.value = f; bp.Q.value = 1.4; g.gain.value = v;
-  s.connect(bp).connect(g).connect(a.destination); s.start();
-}
+// only real piece sounds: no beeps, chimes or jingles anywhere
 const sfx = {
   move: moveSound,
-  bad: () => { if (!play('illegal')) tone(150, 0.22, 'square', 0.05); },
-  good: () => { tone(880, 0.12, 'sine', 0.07); tone(1320, 0.16, 'sine', 0.06, 0.07); },
-  done: () => { if (!play('game-end')) [523, 659, 784, 1047].forEach((f, i) => tone(f, 0.25, 'triangle', 0.09, i * 0.08)); }
+  bad: () => play('illegal'),
+  good: () => {},
+  done: () => {}
 };
 
 /* ================= icons ================= */
@@ -566,7 +553,8 @@ function progressTab() {
     <div class="srow link-row" role="button" tabindex="0" data-act="restore"><span>Restore from a backup</span>${icon('next', 'chev')}</div>
     <div class="srow"><button class="danger" data-act="reset">Reset all progress</button></div>
   </div>
-  <p class="foot">Progress is saved on this phone. Back it up now and then.</p>`, true);
+  <p class="foot">Progress is saved on this phone. Back it up now and then.</p>
+  <p class="foot credits">Piece sounds recorded by Stefan Haack for <a href="https://github.com/shaack/chess-console" target="_blank" rel="noopener">chess-console</a>, <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>, trimmed and level-matched. Engine: Stockfish, GPL-3.0.</p>`, true);
   $$('[data-mini]').forEach(el => miniBoard(el, byId[el.dataset.mini]));
 }
 

@@ -1,0 +1,11 @@
+Piece sounds
+
+The piece sounds are real recordings of wooden chess pieces made by Stefan Haack
+(https://shaack.com) for chess-console (https://github.com/shaack/chess-console).
+They are licensed under Creative Commons Attribution 4.0 International (CC BY 4.0):
+https://creativecommons.org/licenses/by/4.0/
+
+Changes made for Gambit: each sound was cut out of the original sound sprite,
+trimmed, level-matched and faded out. The castling sound places two of the
+recordings one after the other, and the illegal-move sound is a muffled
+(low-pass filtered) version of one recording.
