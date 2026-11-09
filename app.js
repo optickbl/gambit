@@ -1,16 +1,19 @@
-// Gambit — personal chess openings trainer
+// Gambit — chess openings trainer
 import { Chess } from './chess.js';
 import { OPENINGS } from './openings.js';
 
 const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const app = $('#app');
-const DAY = 864e5;
-const IV = [0, 1, 3, 7, 14, 30]; // review interval in days, by perfect-streak
-const LABEL = { new: 'New', learning: 'Learning', review: 'Review', learned: 'Learned', mastered: 'Mastered' };
+const MIN = 6e4, H = 36e5, DAY = 864e5;
+const MAX = 6; // level 6 = mastered
+// how long to wait before the next review once a line reaches level n
+const IV = [0, 4 * H, DAY, 3 * DAY, 7 * DAY, 16 * DAY, 35 * DAY];
+const RM = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-/* ---------------- opening data ---------------- */
+/* ================= opening data ================= */
 const COMMENTS = new Map(); // "position|move" -> explanation
-const byId = {};
+const byId = {}, lineById = {};
 const fen4 = f => f.split(' ').slice(0, 4).join(' ');
 const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
@@ -24,11 +27,12 @@ function parsePgn(p) {
   }
   return out;
 }
-
 for (const op of OPENINGS) {
   byId[op.id] = op;
+  op.par = op.side === 'w' ? 0 : 1;
   op.lines.forEach((ln, i) => {
     Object.assign(ln, { op, i, id: op.id + ':' + slug(ln.name), moves: [], vm: [] });
+    lineById[ln.id] = ln;
     const g = new Chess();
     ln.fens = [g.fen()];
     for (const t of parsePgn(ln.pgn)) {
@@ -41,13 +45,14 @@ for (const op of OPENINGS) {
     }
   });
 }
-
-const commentAt = (ln, k) => (k > 0 ? COMMENTS.get(fen4(ln.fens[k - 1]) + '|' + ln.moves[k - 1]) : null);
+const ALL = OPENINGS.flatMap(o => o.lines);
+const isMine = (ln, k) => (k & 1) === ln.op.par;
+// explanation of the move played at ply k-1 (i.e. the move that leads to position k)
+const commentAt = (ln, k) => (k > 0 ? COMMENTS.get(fen4(ln.fens[k - 1]) + '|' + ln.moves[k - 1]) || '' : '');
 const moveLabel = (k, san) => `${(k >> 1) + 1}.${k & 1 ? '..' : ''}${san}`;
+const colour = k => (k & 1 ? 'Black' : 'White');
 const movesText = (moves, from = 0) =>
   moves.map((s, i) => { const k = from + i; return k & 1 ? (i ? s : `${(k + 1) >> 1}...${s}`) : `${(k >> 1) + 1}.${s}`; }).join(' ');
-
-// every book move at ply k among lines that share this line's first k moves
 function branches(ln, k) {
   const map = new Map();
   for (const L of ln.op.lines) {
@@ -60,58 +65,107 @@ function branches(ln, k) {
   }
   return map;
 }
+function branchText(ln) {
+  const base = ln.op.lines[0];
+  let k = 0;
+  if (ln === base) k = ln.op.start;
+  else while (k < ln.moves.length && ln.moves[k] === base.moves[k]) k++;
+  return movesText(ln.moves.slice(k, k + 6), k) + (ln.moves.length > k + 6 ? ' …' : '');
+}
 const findMove = (g, from, to) =>
   g.moves({ square: from, verbose: true }).find(m => m.to === to && (!m.promotion || m.promotion === 'q'));
+const shuffle = a => { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
 
-/* ---------------- progress (saved on this phone) ---------------- */
-const KEY = 'gambit.v1';
-const S = { lines: {}, xp: 0, day: null, streak: 0, sound: true, sides: {} };
-try { Object.assign(S, JSON.parse(localStorage.getItem(KEY) || '{}')); } catch {}
+/* ================= saved progress ================= */
+const KEY = 'gambit.v2';
+const S = { lines: {}, weak: {}, log: {}, xp: 0, sound: true, theme: 'green', perDay: 2 };
+try {
+  const saved = localStorage.getItem(KEY);
+  if (saved) Object.assign(S, JSON.parse(saved));
+  else {
+    const v1 = JSON.parse(localStorage.getItem('gambit.v1') || 'null');
+    if (v1) {
+      for (const id of Object.keys(v1.lines || {})) if (lineById[id]) S.lines[id] = { lvl: 1, due: Date.now(), seen: Date.now() };
+      S.xp = v1.xp || 0;
+      S.sound = v1.sound !== false;
+      if (v1.day) S.log[v1.day] = { n: 1, c: 0, t: 0, nw: 0 };
+    }
+  }
+} catch {}
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch {} };
-const dayStr = t => new Date(t).toLocaleDateString('en-CA');
-const streakNow = () => (S.day === dayStr(Date.now()) || S.day === dayStr(Date.now() - DAY) ? S.streak : 0);
-function bumpDay() {
-  const t = dayStr(Date.now());
-  if (S.day === t) return;
-  S.streak = S.day === dayStr(Date.now() - DAY) ? S.streak + 1 : 1;
-  S.day = t;
+const noon = (t = Date.now()) => { const d = new Date(t); d.setHours(12, 0, 0, 0); return d.getTime(); };
+const dkey = (t = Date.now()) => new Date(t).toLocaleDateString('en-CA');
+const today = () => S.log[dkey()] || (S.log[dkey()] = { n: 0, c: 0, t: 0, nw: 0 });
+function streak() {
+  let t = noon(), s = 0;
+  if (!S.log[dkey(t)]?.n) t -= DAY; // today not trained yet: the streak is still alive from yesterday
+  while (S.log[dkey(t)]?.n) { s++; t -= DAY; }
+  return s;
+}
+function accuracy(days = 7) {
+  let c = 0, t = 0;
+  for (let i = 0; i < days; i++) { const d = S.log[dkey(noon() - i * DAY)]; if (d) { c += d.c; t += d.t; } }
+  return t ? Math.round((100 * c) / t) : null;
 }
 const rec = ln => S.lines[ln.id];
-function status(ln) {
-  const r = rec(ln);
-  if (!r) return 'new';
-  if (!r.streak) return 'learning';
-  if (r.due <= Date.now()) return 'review';
-  return r.streak >= 3 ? 'mastered' : 'learned';
+const level = ln => rec(ln)?.lvl || 0;
+const isDue = ln => { const r = rec(ln); return !!r && r.due <= Date.now(); };
+function stage(ln) { const l = level(ln); if (!l) return 'new'; if (isDue(ln)) return 'due'; return l >= MAX ? 'mastered' : 'learning'; }
+const mastery = op => op.lines.reduce((s, l) => s + level(l), 0) / (MAX * op.lines.length);
+const learnedIn = op => op.lines.filter(l => rec(l)).length;
+function counts() {
+  const c = { new: 0, learning: 0, mastered: 0, due: 0 };
+  for (const ln of ALL) { const l = level(ln); if (!l) c.new++; else if (l >= MAX) c.mastered++; else c.learning++; if (isDue(ln)) c.due++; }
+  c.learned = c.learning + c.mastered;
+  return c;
 }
-function record(ln, perfect) {
-  const r = S.lines[ln.id] || { streak: 0, due: 0, seen: 0 };
-  r.seen++;
-  if (perfect) { r.streak++; r.due = Date.now() + IV[Math.min(r.streak, 5)] * DAY - 3 * 36e5; }
-  else { r.streak = 0; r.due = Date.now(); }
-  S.lines[ln.id] = r;
-  S.xp += perfect ? 10 : 3;
-  bumpDay();
-  save();
+const addXP = n => { S.xp += n; if (R) R.stats.xp += n; };
+
+function learned(ln) {
+  S.lines[ln.id] = { lvl: 1, due: Date.now() + IV[1], seen: Date.now() };
+  today().nw++;
 }
-const allLines = () => OPENINGS.flatMap(o => o.lines);
-const dueLines = () => allLines().filter(l => { const r = rec(l); return r && r.due <= Date.now(); });
-const nextNew = () => allLines().find(l => !rec(l));
-const drillSide = op => S.sides[op.id] || op.side;
-function prog(op) {
-  let pts = 0, n = 0;
-  for (const l of op.lines) { const r = rec(l); if (r && r.streak) { n++; pts += Math.min(r.streak, 3); } }
-  return { n, pct: Math.round((100 * pts) / (3 * op.lines.length)) };
+function reviewed(ln, perfect) {
+  const r = rec(ln), now = Date.now(), before = r.lvl, wasDue = r.due <= now;
+  if (perfect) { if (wasDue) { r.lvl = Math.min(MAX, r.lvl + 1); r.due = now + IV[r.lvl]; } }
+  else { r.lvl = Math.max(1, r.lvl - (wasDue ? 2 : 1)); r.due = now + 10 * MIN; }
+  r.seen = now;
+  return { before, after: r.lvl, wasDue };
+}
+const wkey = (ln, k) => ln.id + '@' + k;
+const miss = (ln, k) => { S.weak[wkey(ln, k)] = 2; };
+const hit = (ln, k) => { const key = wkey(ln, k); if (S.weak[key] && --S.weak[key] <= 0) delete S.weak[key]; };
+function weakList() {
+  return Object.keys(S.weak).map(key => { const at = key.lastIndexOf('@'), ln = lineById[key.slice(0, at)], k = +key.slice(at + 1); return ln && ln.moves[k] ? { ln, k } : null; }).filter(Boolean);
+}
+function fmtDue(t) {
+  const d = t - Date.now();
+  if (d <= 15 * MIN) return 'in a few minutes';
+  if (d < 20 * H) { const h = Math.round(d / H); return h <= 1 ? 'in about an hour' : `in ${h} hours`; }
+  const days = Math.round(d / DAY);
+  return days <= 1 ? 'tomorrow' : `in ${days} days`;
 }
 
-/* ---------------- sound ---------------- */
-let AC = null;
-function audio() {
-  try {
-    if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)();
-    if (AC.state === 'suspended') AC.resume();
-  } catch {}
+// daily plan: reviews that are due, then new lines (finish openings you started first)
+function freshLines(n) {
+  const out = [], rem = OPENINGS.map(o => o.lines.filter(l => !rec(l)));
+  const roundRobin = idx => {
+    let more = true;
+    while (more && out.length < n) { more = false; for (const i of idx) if (rem[i].length && out.length < n) { out.push(rem[i].shift()); more = true; } }
+  };
+  roundRobin(OPENINGS.map((o, i) => i).filter(i => OPENINGS[i].lines.some(l => rec(l))));
+  roundRobin(OPENINGS.map((o, i) => i));
+  return out;
 }
+function plan() {
+  const due = ALL.filter(isDue).sort((a, b) => rec(a).due - rec(b).due).slice(0, 20);
+  const fresh = freshLines(Math.max(0, S.perDay - (S.log[dkey()]?.nw || 0)));
+  return { due, fresh };
+}
+
+/* ================= sound ================= */
+let AC = null;
+function audio() { try { if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)(); if (AC.state === 'suspended') AC.resume(); } catch {} }
 function tone(f, d, type = 'sine', v = 0.12, at = 0) {
   const a = S.sound && AC; if (!a) return;
   const t = a.currentTime + at, o = a.createOscillator(), g = a.createGain();
@@ -130,10 +184,34 @@ function knock(f, v) {
 const sfx = {
   move: m => (m && m.captured ? (knock(650, 1.8), knock(1400, 0.9)) : knock(1150, 1.5)),
   bad: () => tone(150, 0.22, 'square', 0.05),
+  good: () => { tone(880, 0.12, 'sine', 0.07); tone(1320, 0.16, 'sine', 0.06, 0.07); },
   done: () => [523, 659, 784, 1047].forEach((f, i) => tone(f, 0.25, 'triangle', 0.09, i * 0.08))
 };
 
-/* ---------------- board ---------------- */
+/* ================= icons ================= */
+const ICONS = {
+  back: '<path d="M15 18l-6-6 6-6"/>',
+  next: '<path d="M9 18l6-6-6-6"/>',
+  first: '<path d="M18 18l-6-6 6-6M8 6v12"/>',
+  last: '<path d="M6 6l6 6-6 6M16 6v12"/>',
+  flame: '<path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.4-.5-2-1-3-1.1-2.1-.2-4 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.2.4-2.3 1-3a2.5 2.5 0 0 0 2.5 2.5z"/>',
+  zap: '<path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>',
+  book: '<path d="M2 4h6a4 4 0 0 1 4 4v13a3 3 0 0 0-3-3H2z"/><path d="M22 4h-6a4 4 0 0 0-4 4v13a3 3 0 0 1 3-3h7z"/>',
+  target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.2"/>',
+  chart: '<path d="M18 20V10M12 20V4M6 20v-6"/>',
+  bulb: '<path d="M9 18h6M10 22h4"/><path d="M15.1 14c.2-1 .7-1.7 1.4-2.5A4.7 4.7 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.8 1.2 1.5 1.4 2.5"/>',
+  eye: '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>',
+  restart: '<path d="M3 4v6h6"/><path d="M3.6 15a9 9 0 1 0 2.1-9.4L3 10"/>',
+  flip: '<path d="M3 16l4 4 4-4M7 20V4M21 8l-4-4-4 4M17 4v16"/>',
+  check: '<path d="M20 6L9 17l-5-5"/>',
+  award: '<circle cx="12" cy="8" r="6.5"/><path d="M8.2 13.6L7 22l5-3 5 3-1.2-8.4"/>',
+  shuffle: '<path d="M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/>',
+  alert: '<path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/>',
+  layers: '<path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5M2 12l10 5 10-5"/>'
+};
+const icon = (n, cls = '') => `<svg class="ic ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n]}</svg>`;
+
+/* ================= board ================= */
 const FILES = 'abcdefgh';
 class Board {
   constructor(el, { mini = false, onMove = null } = {}) {
@@ -141,8 +219,8 @@ class Board {
     el.classList.add('board');
     if (mini) el.classList.add('mini'); else this.bind();
   }
-  set(g, { flip = this.flip, last = null } = {}) {
-    Object.assign(this, { g, flip, last, sel: null, targets: [], hintSq: null, arrow: null });
+  set(g, { flip = this.flip, last = null, arrow = null } = {}) {
+    Object.assign(this, { g, flip, last, arrow, sel: null, targets: [], hintSq: null });
     this.render();
   }
   name(r, c) { return FILES[this.flip ? 7 - c : c] + (this.flip ? r + 1 : 8 - r); }
@@ -178,6 +256,7 @@ class Board {
     return `<svg class="arrow" viewBox="0 0 8 8"><line x1="${f(x1 + ux * 0.2)}" y1="${f(y1 + uy * 0.2)}" x2="${f(bx)}" y2="${f(by)}"/><polygon points="${f(tx)},${f(ty)} ${f(bx + px * 0.26)},${f(by + py * 0.26)} ${f(bx - px * 0.26)},${f(by - py * 0.26)}"/></svg>`;
   }
   animate(from, to) {
+    if (RM) return;
     const cell = this.cell(to), el = cell && cell.querySelector('.pc');
     if (!el) return;
     const a = this.pos(from), b = this.pos(to), s = this.el.clientWidth / 8;
@@ -189,7 +268,7 @@ class Board {
     el.style.transform = '';
   }
   flash(sq, cls, ms = 500) { const c = this.cell(sq); if (!c) return; c.classList.add(cls); setTimeout(() => c.classList.remove(cls), ms); }
-  shake() { const e = this.el; e.classList.remove('shake'); void e.offsetWidth; e.classList.add('shake'); setTimeout(() => e.classList.remove('shake'), 350); }
+  shake() { if (RM) return; const e = this.el; e.classList.remove('shake'); void e.offsetWidth; e.classList.add('shake'); setTimeout(() => e.classList.remove('shake'), 350); }
   at(e) {
     const r = this.el.getBoundingClientRect();
     const c = Math.floor(((e.clientX - r.left) / r.width) * 8), w = Math.floor(((e.clientY - r.top) / r.height) * 8);
@@ -246,270 +325,551 @@ class Board {
     el.addEventListener('pointercancel', end);
   }
 }
-const miniBoard = (el, op) => {
+function miniBoard(el, op) {
   const ln = op.lines[0];
   new Board(el, { mini: true }).set(new Chess(ln.fens[op.start]), { flip: op.side === 'b', last: ln.vm[op.start - 1] });
-};
+}
 
-/* ---------------- shared UI bits ---------------- */
+/* ================= shared UI ================= */
 let timers = [];
 const later = (fn, ms) => timers.push(setTimeout(fn, ms));
 const stopTimers = () => { timers.forEach(clearTimeout); timers = []; };
 let toastT;
-function toast(t) { const e = $('#toast'); e.textContent = t; e.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => e.classList.remove('on'), 1800); }
-const say = (t, kind) => { const e = $('#st'); if (e) { e.textContent = t; e.className = 'status ' + kind; } };
-const bar = (title, back, id = '', extra = '') =>
-  `<header class="bar"><button class="icon" data-act="${back}" data-id="${id}" aria-label="Back">‹</button><h1>${title}</h1>${extra || '<span class="sp"></span>'}</header>`;
+function toast(t) { const e = $('#toast'); e.textContent = t; e.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => e.classList.remove('on'), 1900); }
 
-/* ---------------- home ---------------- */
-function card(op) {
-  const p = prog(op), due = op.lines.filter(l => status(l) === 'review').length;
-  return `<div class="ocard" role="button" tabindex="0" data-act="open" data-id="${op.id}">
-    <div class="ocb" data-mini="${op.id}"></div>
-    <div class="oc"><b>${op.name}</b><small class="mono">${movesText(op.lines[0].moves.slice(0, op.start))}</small>
-    <div class="meter"><i style="width:${p.pct}%"></i></div>
-    <small class="muted">${p.n}/${op.lines.length} lines learned${due ? ` · <span class="due">${due} to review</span>` : ''}</small></div></div>`;
-}
-const section = (title, side) => `<h3 class="sec">${title}</h3><div class="list">${OPENINGS.filter(o => o.side === side).map(card).join('')}</div>`;
-
-function home() {
+function show(html, tabs = false) {
   stopTimers();
-  const due = dueLines().length, nn = nextNew();
-  app.innerHTML = `
+  closeSheet();
+  app.innerHTML = html + (tabs ? tabBar() : '');
+  app.className = tabs ? 'has-tabs' : html.includes('class="dock') ? 'has-dock' : '';
+  if (!RM) { app.classList.remove('enter'); void app.offsetWidth; app.classList.add('enter'); }
+  window.scrollTo(0, 0);
+}
+function sheet(html, dismissable = false) {
+  closeSheet();
+  const el = document.createElement('div');
+  el.className = 'sheet-wrap';
+  el.innerHTML = `<div class="scrim"${dismissable ? ' data-act="sheet-close"' : ''}></div><div class="sheet" role="dialog" aria-modal="true">${html}</div>`;
+  document.body.appendChild(el);
+  requestAnimationFrame(() => el.classList.add('on'));
+}
+const closeSheet = () => $$('.sheet-wrap').forEach(e => e.remove());
+const topbar = (title, act, id = '', sub = '', right = '') =>
+  `<header class="bar"><button class="iconbtn" data-act="${act}" data-id="${id}" aria-label="Back">${icon('back')}</button><div class="bt"><b>${title}</b>${sub ? `<span>${sub}</span>` : ''}</div>${right || '<span class="sp"></span>'}</header>`;
+const bars = l => `<span class="bars${l >= MAX ? ' gold' : ''}" aria-label="Level ${l} of ${MAX}">${Array.from({ length: MAX }, (_, i) => `<i${i < l ? ' class="on"' : ''}></i>`).join('')}</span>`;
+function ring(p) {
+  const r = 17, c = 2 * Math.PI * r, pct = Math.round(p * 100);
+  return `<div class="ring${pct >= 100 ? ' gold' : ''}" aria-label="${pct}% mastered"><svg viewBox="0 0 44 44"><circle cx="22" cy="22" r="${r}" class="rt"/><circle cx="22" cy="22" r="${r}" class="rv" stroke-dasharray="${(c * p).toFixed(1)} ${c.toFixed(1)}"/></svg><span>${pct}<small>%</small></span></div>`;
+}
+function coach(kind, title, text = '', extra = '') {
+  const el = $('#note'); if (!el) return;
+  el.className = 'coach ' + kind;
+  el.innerHTML = `<div class="ava"><i class="pc wN"></i></div><div class="ct"><b>${title}</b>${text ? `<p>${text}</p>` : ''}${extra}</div>`;
+}
+function strip(el, moves, k, act) {
+  if (!el) return;
+  el.innerHTML = moves.length
+    ? moves.map((s, i) => `${i & 1 ? '' : `<span class="no">${(i >> 1) + 1}.</span>`}<button class="mv${i === k - 1 ? ' cur' : ''}${i >= k ? ' fut' : ''}"${act ? ` data-act="${act}" data-k="${i + 1}"` : ' tabindex="-1"'}>${s}</button>`).join('')
+    : '<span class="no">Starting position</span>';
+  const cur = el.querySelector('.cur');
+  el.scrollLeft = cur ? cur.offsetLeft - el.clientWidth / 2 + cur.offsetWidth / 2 : 0;
+}
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+function applyTheme() { document.documentElement.dataset.theme = S.theme; }
+
+/* ================= tabs ================= */
+let tab = 'train', sideTab = 'w';
+const TABS = [['train', 'target', 'Train'], ['openings', 'book', 'Openings'], ['progress', 'chart', 'Progress']];
+const tabBar = () => `<nav class="tabs">${TABS.map(([id, ic, label]) => `<button class="tab${tab === id ? ' on' : ''}" data-act="tab" data-id="${id}"${tab === id ? ' aria-current="page"' : ''}>${icon(ic)}<span>${label}</span></button>`).join('')}</nav>`;
+function openTab(id) { tab = id; ({ train: trainTab, openings: openingsTab, progress: progressTab })[id](); }
+
+function row(ic, title, sub, act, id = '') {
+  const off = !act;
+  return `<div class="row${off ? ' off' : ''}"${off ? '' : ` role="button" tabindex="0" data-act="${act}" data-id="${id}"`}><span class="tile">${icon(ic)}</span><span class="rt"><b>${title}</b><span>${sub}</span></span>${off ? '' : icon('next', 'chev')}</div>`;
+}
+function weekStrip() {
+  const base = noon(), dow = (new Date(base).getDay() + 6) % 7;
+  let h = '';
+  for (let i = 0; i < 7; i++) {
+    const t = base + (i - dow) * DAY, key = dkey(t), done = S.log[key]?.n;
+    h += `<span class="day${done ? ' done' : ''}${i === dow ? ' now' : ''}${i > dow ? ' fut' : ''}"><small>${'MTWTFSS'[i]}</small>${done ? icon('check') : ''}</span>`;
+  }
+  return `<div class="week" aria-label="This week">${h}</div>`;
+}
+
+function trainTab() {
+  const { due, fresh } = plan(), total = due.length + fresh.length, c = counts(), weak = weakList().length;
+  const first = due[0] || fresh[0];
+  let heroOp = first ? first.op : null;
+  if (!heroOp) { let best = 0; for (const ln of ALL) { const r = rec(ln); if (r && r.seen > best) { best = r.seen; heroOp = ln.op; } } }
+  heroOp = heroOp || OPENINGS[0];
+  const parts = [due.length && plural(due.length, 'review'), fresh.length && plural(fresh.length, 'new line')].filter(Boolean);
+  show(`
   <header class="top">
     <div class="brand"><i class="pc wN"></i><span>Gambit</span></div>
-    <div class="stats"><span class="stat" title="Day streak">🔥 ${streakNow()}</span><span class="stat" title="XP">⚡ ${S.xp}</span>
-    <button class="icon" data-act="sound" aria-label="Sound on/off">${S.sound ? '🔊' : '🔇'}</button></div>
+    <div class="stats"><span class="stat fire" title="Day streak">${icon('flame')}${streak()}</span><span class="stat xp" title="XP">${icon('zap')}${S.xp}</span></div>
   </header>
-  <section class="hero">
-    <div><h2>${due ? 'Daily review' : nn ? 'Learn a new line' : 'All caught up'}</h2>
-    <p>${due ? `${due} line${due > 1 ? 's' : ''} ready — keep them fresh.` : nn ? `${nn.op.name} · ${nn.name}` : 'Every line is learned. Come back tomorrow.'}</p></div>
-    ${due ? '<button class="btn primary" data-act="review">Start</button>' : nn ? `<button class="btn primary" data-act="learn" data-id="${nn.op.id}" data-li="${nn.i}">Start</button>` : ''}
+  <section class="today">
+    <div class="hero-board" id="hb"></div>
+    <div class="today-copy">
+      <h1 class="display">${total ? 'Today’s session' : 'Done for today'}</h1>
+      <p>${total ? parts.join(' and ') : c.learned ? 'Every review is done. A quick test keeps the lines sharp.' : 'Learn your first line to start training.'}</p>
+      ${first ? `<p class="up">Up next: <b>${first.op.name}</b>, ${first.name}</p>` : ''}
+      ${total ? '<button class="btn go big" data-act="session">Start session</button>'
+        : c.learned ? '<button class="btn go big" data-act="test">Take a quick test</button>'
+        : `<button class="btn go big" data-act="learn" data-id="${OPENINGS[0].id}" data-li="0">Learn the first line</button>`}
+    </div>
   </section>
-  ${section('Play as White', 'w')}${section('Play as Black', 'b')}
-  <h3 class="sec">Coming next</h3>
-  <div class="soon"><span>⚔️</span><div><b>Middlegame tactics</b><p>Forks, pins, skewers and mating patterns — puzzles that train your eye.</p></div></div>
-  <div class="soon"><span>👑</span><div><b>Endgames</b><p>Basic mates, king &amp; pawn and rook endings — the technique to convert a win.</p></div></div>`;
-  app.querySelectorAll('[data-mini]').forEach(el => miniBoard(el, byId[el.dataset.mini]));
+  <h2 class="h2">This week</h2>
+  ${weekStrip()}
+  <h2 class="h2">More training</h2>
+  <div class="group">
+    ${row('shuffle', 'Quick test', c.learned ? '10 positions from lines you have learned' : 'Unlocks after your first line', c.learned ? 'test' : '')}
+    ${row('alert', 'Weak moves', weak ? `${plural(weak, 'move')} you keep missing` : 'Moves you miss show up here', weak ? 'weak' : '')}
+    ${row('layers', 'All openings', `${c.learned} of ${ALL.length} lines learned, ${c.mastered} mastered`, 'tab', 'openings')}
+  </div>`, true);
+  miniHero($('#hb'), heroOp);
+}
+function miniHero(el, op) {
+  const ln = op.lines[0];
+  new Board(el).set(new Chess(ln.fens[op.start]), { flip: op.side === 'b', last: ln.vm[op.start - 1] });
 }
 
-/* ---------------- opening page ---------------- */
-function branchText(ln) {
-  const base = ln.op.lines[0];
-  let k = 0;
-  if (ln === base) k = ln.op.start;
-  else while (k < ln.moves.length && ln.moves[k] === base.moves[k]) k++;
-  return movesText(ln.moves.slice(k, k + 6), k) + (ln.moves.length > k + 6 ? ' …' : '');
+function openingRow(op) {
+  const d = op.lines.filter(isDue).length;
+  return `<div class="orow" role="button" tabindex="0" data-act="open" data-id="${op.id}">
+    <div class="mb" data-mini="${op.id}"></div>
+    <div class="ot"><b>${op.name}</b><span class="nota">${movesText(op.lines[0].moves.slice(0, op.start))}</span>
+    <span class="sub">${learnedIn(op)} of ${op.lines.length} lines learned${d ? `, <em>${d} due</em>` : ''}</span></div>
+    ${ring(mastery(op))}</div>`;
 }
-function openView(id) {
-  stopTimers();
-  const op = byId[id], side = drillSide(op);
-  app.innerHTML = `
-  ${bar(op.name, 'home')}
-  <div class="ophero"><div class="opb" id="opb"></div>
-    <div><p class="mono">${movesText(op.lines[0].moves.slice(0, op.start))}</p><p>${op.about}</p><p class="muted small">Played by ${op.players}</p></div></div>
-  <div class="card"><h3>Key ideas</h3><ul>${op.ideas.map(i => `<li>${i}</li>`).join('')}</ul></div>
-  <div class="row2"><button class="btn" data-act="learn" data-id="${id}" data-li="0">📖 Learn</button><button class="btn primary" data-act="drill" data-id="${id}">🎯 Drill</button></div>
-  <p class="center small muted">You drill as <button class="link" data-act="side" data-id="${id}">${side === 'w' ? 'White' : 'Black'} ⇄</button></p>
-  <h3 class="sec">${op.lines.length} lines · tap one to study it</h3>
-  <div class="list">${op.lines.map(ln => { const st = status(ln); return `<div class="lrow" role="button" tabindex="0" data-act="learn" data-id="${id}" data-li="${ln.i}"><div><b>${ln.name}</b><small class="mono">${branchText(ln)}</small></div><span class="tag ${st}">${LABEL[st]}</span></div>`; }).join('')}</div>`;
-  miniBoard($('#opb'), op);
+function openingsTab() {
+  show(`
+  <header class="top"><h1 class="display">Openings</h1></header>
+  <div class="seg" role="tablist">${['w', 'b'].map(s => `<button role="tab" aria-selected="${sideTab === s}" class="${sideTab === s ? 'on' : ''}" data-act="side" data-id="${s}">As ${s === 'w' ? 'White' : 'Black'}</button>`).join('')}</div>
+  <p class="hint-text">${sideTab === 'w' ? 'Your openings when you play the white pieces.' : 'Your answers to 1.e4 and 1.d4 when you play black.'}</p>
+  <div class="group">${OPENINGS.filter(o => o.side === sideTab).map(openingRow).join('')}</div>`, true);
+  $$('[data-mini]').forEach(el => miniBoard(el, byId[el.dataset.mini]));
 }
 
-/* ---------------- learn mode ---------------- */
-let L = null;
-function learnView(id, li, k = 0, anim = false) {
-  stopTimers();
-  const op = byId[id], ln = op.lines[li];
-  const flip = L && L.op === op ? L.flip : drillSide(op) === 'b';
-  app.innerHTML = `
-  ${bar(op.name, 'open', id, '<button class="icon" data-act="flip" aria-label="Flip board">⇅</button>')}
-  <p class="lname">${ln.name}</p>
-  <div class="bwrap"><div id="bd"></div></div>
-  <div class="ctrl"><button class="icon" data-act="l-first" aria-label="Start">⏮</button><button class="icon" data-act="l-prev" aria-label="Back">◀</button><button class="icon big" data-act="l-next" aria-label="Next move">▶</button><button class="icon" data-act="l-last" aria-label="End">⏭</button></div>
-  <div class="note" id="note"></div>
-  <div id="alts"></div>
-  <div class="moves" id="mv"></div>
-  <button class="btn primary wide" data-act="drill-line" data-id="${id}" data-li="${li}">🎯 Drill this line</button>`;
-  L = { op, ln, k, flip, board: new Board($('#bd'), { onMove: learnMove }) };
-  L.board.interactive = true;
-  learnShow(anim);
+function progressTab() {
+  const c = counts(), acc = accuracy(), total = ALL.length, weak = weakList().length;
+  const base = noon(), dow = (new Date(base).getDay() + 6) % 7, start = base - (dow + 28) * DAY;
+  let cal = '<div class="cal">' + [...'MTWTFSS'].map(x => `<span class="cd">${x}</span>`).join('');
+  for (let i = 0; i < 35; i++) {
+    const t = start + i * DAY, key = dkey(t), n = S.log[key]?.n || 0;
+    cal += `<span class="cc${(Math.floor(i / 7) + (i % 7)) % 2 ? ' dk' : ''}${n ? ' on' : ''}${key === dkey() ? ' now' : ''}${t > base ? ' fut' : ''}" title="${key}${n ? `: ${n} trained` : ''}"></span>`;
+  }
+  cal += '</div>';
+  show(`
+  <header class="top"><h1 class="display">Progress</h1></header>
+  <section class="panel">
+    <p class="big-line"><b>${c.learned}</b> of ${total} lines learned, <b>${c.mastered}</b> mastered</p>
+    <div class="stack"><i class="m" style="flex:${c.mastered}"></i><i class="l" style="flex:${c.learning}"></i><i class="n" style="flex:${c.new}"></i></div>
+    <div class="legend"><span><i class="m"></i>Mastered ${c.mastered}</span><span><i class="l"></i>Learning ${c.learning}</span><span><i class="n"></i>Not started ${c.new}</span></div>
+  </section>
+  <section class="trio">
+    <div><b>${streak()}</b><span>Day streak</span></div>
+    <div><b>${acc == null ? '–' : acc + '%'}</b><span>Accuracy, 7 days</span></div>
+    <div><b>${S.xp}</b><span>XP</span></div>
+  </section>
+  <h2 class="h2">Training days</h2>
+  <section class="panel">${cal}</section>
+  ${weak ? `<div class="group mt">${row('alert', 'Weak moves', `${plural(weak, 'move')} to fix`, 'weak')}</div>` : ''}
+  <h2 class="h2">Openings</h2>
+  <div class="group">${OPENINGS.map(openingRow).join('')}</div>
+  <h2 class="h2">Settings</h2>
+  <div class="group">
+    <div class="srow"><span>Sound</span><button class="switch${S.sound ? ' on' : ''}" role="switch" aria-checked="${S.sound}" aria-label="Sound" data-act="sound"><i></i></button></div>
+    <div class="srow"><span>Board</span><div class="seg sm">${[['green', 'Green'], ['brown', 'Wood'], ['blue', 'Slate']].map(([v, l]) => `<button class="${S.theme === v ? 'on' : ''}" data-act="theme" data-id="${v}">${l}</button>`).join('')}</div></div>
+    <div class="srow"><span>New lines a day</span><div class="seg sm">${[1, 2, 3, 5].map(v => `<button class="${S.perDay === v ? 'on' : ''}" data-act="perday" data-id="${v}">${v}</button>`).join('')}</div></div>
+    <div class="srow"><button class="danger" data-act="reset">Reset all progress</button></div>
+  </div>
+  <p class="foot">Progress is saved on this phone.</p>`, true);
+  $$('[data-mini]').forEach(el => miniBoard(el, byId[el.dataset.mini]));
 }
-function learnShow(anim) {
-  const { ln, k, board } = L, last = ln.vm[k - 1];
-  board.set(new Chess(ln.fens[k]), { flip: L.flip, last });
+
+/* ================= opening page ================= */
+function lineRow(ln) {
+  const st = stage(ln);
+  return `<div class="lrow" role="button" tabindex="0" data-act="line" data-id="${ln.op.id}" data-li="${ln.i}">
+    <div class="lt"><b>${ln.name}</b><span class="nota">${branchText(ln)}</span></div>
+    <div class="lr">${st === 'new' ? '<em class="pill new">New</em>' : st === 'due' ? '<em class="pill due">Review</em>' : st === 'mastered' ? '<em class="pill gold">Mastered</em>' : ''}${bars(level(ln))}</div></div>`;
+}
+function openingView(id) {
+  const op = byId[id], nx = op.lines.find(l => !rec(l)), due = op.lines.filter(isDue).length, learnedN = learnedIn(op);
+  show(`
+  ${topbar(op.name, 'tab', tab, `${learnedN} of ${op.lines.length} lines learned`)}
+  <div class="stage"><div id="opb"></div></div>
+  <div class="pad">
+    <p class="nota lg">${movesText(op.lines[0].moves.slice(0, op.start))}</p>
+    <p class="lead">${op.about}</p>
+    <p class="muted">Played by ${op.players}.</p>
+    <ul class="ideas">${op.ideas.map(i => `<li>${i}</li>`).join('')}</ul>
+    <div class="actions">
+      ${nx ? `<button class="btn go" data-act="learn" data-id="${id}" data-li="${nx.i}">${learnedN ? 'Learn next line' : 'Learn first line'}</button>` : ''}
+      <button class="btn${nx ? '' : ' go'}" data-act="practice" data-id="${id}"${learnedN ? '' : ' disabled'}>${due ? `Review ${due} due` : 'Practice'}</button>
+    </div>
+  </div>
+  <h2 class="h2">Lines</h2>
+  <div class="group">${op.lines.map(lineRow).join('')}</div>`);
+  new Board($('#opb')).set(new Chess(op.lines[0].fens[op.start]), { flip: op.side === 'b', last: op.lines[0].vm[op.start - 1] });
+}
+
+/* ================= study a line (free browsing) ================= */
+let V = null;
+function lineView(id, li, k = 0, anim = false) {
+  const op = byId[id], ln = op.lines[li], flip = V && V.op === op ? V.flip : op.side === 'b';
+  show(`
+  ${topbar(op.name, 'open', id, ln.name, `<button class="iconbtn" data-act="v-flip" aria-label="Flip board">${icon('flip')}</button>`)}
+  <div class="stage"><div id="bd"></div></div>
+  <div class="strip" id="mv"></div>
+  <div class="pad">
+    <div class="coach" id="note"></div>
+    <div id="alts"></div>
+    <div class="actions one">${rec(ln)
+      ? `<button class="btn go" data-act="practice-line" data-id="${id}" data-li="${li}">Practice this line</button>`
+      : `<button class="btn go" data-act="learn" data-id="${id}" data-li="${li}">Learn this line</button>`}</div>
+  </div>
+  <nav class="dock">
+    <button data-act="v-first" aria-label="Go to start">${icon('first')}</button>
+    <button data-act="v-prev" aria-label="Previous move">${icon('back')}</button>
+    <button data-act="v-next" class="primary" aria-label="Next move">${icon('next')}</button>
+    <button data-act="v-last" aria-label="Go to end">${icon('last')}</button>
+  </nav>`);
+  V = { op, ln, k, flip, board: new Board($('#bd'), { onMove: studyMove }) };
+  V.board.interactive = true;
+  studyShow(anim);
+}
+function studyShow(anim) {
+  const { ln, k, board } = V, last = ln.vm[k - 1];
+  board.set(new Chess(ln.fens[k]), { flip: V.flip, last });
   if (anim && last) board.animate(last.from, last.to);
-  let h;
-  if (k === 0) h = `<b>${ln.name}</b><p>${L.op.about}</p><p class="muted small">Tap ▶ — or play the moves yourself on the board.</p>`;
-  else { const c = commentAt(ln, k); h = `<b>${moveLabel(k - 1, ln.moves[k - 1])}</b>${c ? `<p>${c}</p>` : ''}`; }
-  if (k === ln.moves.length) h += '<p class="ok">✓ End of the line — now drill it to lock it in.</p>';
-  $('#note').innerHTML = h;
+  strip($('#mv'), ln.moves, k, 'v-jump');
+  const end = k === ln.moves.length ? '<p class="end">End of the line.</p>' : '';
+  if (k === 0) coach('info', ln.name, 'Step through with the arrows below, or play the moves yourself on the board.');
+  else coach(isMine(ln, k - 1) ? 'you' : 'them', `${isMine(ln, k - 1) ? 'You play' : colour(k - 1) + ' plays'} ${moveLabel(k - 1, ln.moves[k - 1])}`, commentAt(ln, k), end);
   const br = branches(ln, k);
   br.delete(ln.moves[k]);
-  const mine = (k & 1 ? 'b' : 'w') === drillSide(L.op);
   $('#alts').innerHTML = br.size
-    ? `<p class="small muted">${mine ? 'You can also play' : `What if ${k & 1 ? 'Black' : 'White'} plays…`}</p>` +
-      [...br].map(([s, ls]) => `<button class="chip" data-act="l-alt" data-li="${ls[0].i}">${moveLabel(k, s)}<small>${ls[0].name}</small></button>`).join('')
+    ? `<h3 class="h3">${isMine(ln, k) ? 'You could also play' : `If ${colour(k)} plays something else`}</h3><div class="group flush">${[...br].map(([s, ls]) => `<div class="brow" role="button" tabindex="0" data-act="v-alt" data-li="${ls[0].i}"><span class="nota">${moveLabel(k, s)}</span><span class="bn">${ls[0].name}</span>${icon('next', 'chev')}</div>`).join('')}</div>`
     : '';
-  $('#mv').innerHTML = ln.moves.map((s, i) => (i & 1 ? '' : `<span class="no">${(i >> 1) + 1}.</span>`) + `<button class="m${i === k - 1 ? ' cur' : ''}" data-act="l-jump" data-k="${i + 1}">${s}</button>`).join('');
 }
-function learnMove(from, to, anim) {
-  const { ln, k } = L, m = findMove(new Chess(ln.fens[k]), from, to);
-  if (!m) { L.board.render(); return; }
+function studyMove(from, to, anim) {
+  const { ln, k } = V, m = findMove(new Chess(ln.fens[k]), from, to);
+  if (!m) { V.board.render(); return; }
   const br = branches(ln, k);
   if (!br.has(m.san)) {
-    L.board.render(); L.board.flash(to, 'bad'); sfx.bad();
-    toast(k >= ln.moves.length ? 'That is the end of this line' : 'Not the book move here — tap ▶ to see it');
+    V.board.render(); V.board.flash(to, 'bad'); sfx.bad();
+    toast(k >= ln.moves.length ? 'This line ends here' : 'Not in this opening. Tap next to see the move.');
     return;
   }
   const ls = br.get(m.san), nl = ls.includes(ln) ? ln : ls[0];
   sfx.move(m);
-  if (nl !== ln) return learnView(L.op.id, nl.i, k + 1, anim);
-  L.k = k + 1;
-  learnShow(anim);
+  if (nl !== ln) return lineView(V.op.id, nl.i, k + 1, anim);
+  V.k = k + 1;
+  studyShow(anim);
 }
 
-/* ---------------- drill mode ---------------- */
-let D = null;
-function pickLine(pool, avoid) {
-  const now = Date.now(), cand = pool.length > 1 ? pool.filter(l => l !== avoid) : pool;
-  const score = l => { const r = rec(l); if (!r) return 1e3 + pool.indexOf(l); if (r.due <= now) return r.due / 1e13; return 1e4 + (r.due - now) / DAY; };
-  return cand.reduce((a, b) => (score(b) < score(a) ? b : a));
+/* ================= trainer: learn, review, practice, tests ================= */
+let R = null;
+const KIND = { learn: 'New line', review: 'Review', practice: 'Practice', pos: 'Find the move' };
+const MODE = { session: 'Today’s session', learn: 'Learn', practice: 'Practice', test: 'Quick test', weak: 'Weak moves' };
+function run(mode, tasks, back) {
+  if (!tasks.length) return toast('Nothing to train here yet');
+  R = { mode, tasks, back, i: -1, stats: { lines: 0, perfect: 0, c: 0, t: 0, xp: 0, ok: 0, n: 0 }, requeued: new Set() };
+  nextTask();
 }
-function startDrill(mode, opId, li) {
-  stopTimers();
-  const pool = mode === 'review' ? dueLines() : byId[opId].lines;
-  if (!pool.length) return home();
-  const ln = li != null ? byId[opId].lines[li] : pickLine(pool, D && D.ln);
-  D = { mode, opId: ln.op.id, ln, side: drillSide(ln.op), g: new Chess(), k: 0, perfect: true, miss: 0 };
-  app.innerHTML = `
-  ${bar(mode === 'review' ? 'Daily review' : 'Drill', mode === 'review' ? 'home' : 'open', ln.op.id, `<span class="pill">${ln.op.name}</span>`)}
-  <div class="status" id="st"></div>
-  <div class="bwrap"><div id="bd"></div></div>
-  <div class="ctrl3"><button class="btn" data-act="d-hint">💡 Hint</button><button class="btn" data-act="d-show">👁 Show</button><button class="btn" data-act="d-restart">↺ Restart</button></div>
-  <div class="note" id="note"><p class="muted">You play ${D.side === 'w' ? 'White' : 'Black'}. Play the book moves — the app answers with the replies it knows, so over time you get tested on all of them.</p></div>
-  <div id="ov"></div>`;
-  D.board = new Board($('#bd'), { onMove: drillMove });
-  D.board.side = D.side;
-  D.board.set(D.g, { flip: D.side === 'b' });
-  drillStep();
-}
-function dnote() {
-  const c = commentAt(D.ln, D.k);
-  $('#note').innerHTML = `<b>${moveLabel(D.k - 1, D.ln.moves[D.k - 1])}</b>${c ? `<p>${c}</p>` : ''}`;
-}
-function drillStep() {
-  const d = D;
-  if (d.k >= d.ln.moves.length) return drillDone();
-  if (d.g.turn() === d.side) { d.board.interactive = true; say('Your move', 'you'); return; }
-  d.board.interactive = false;
-  say(`${d.g.turn() === 'w' ? 'White' : 'Black'} is moving…`, 'them');
-  later(() => {
-    if (D !== d) return;
-    const m = d.g.move(d.ln.moves[d.k]);
-    d.k++;
-    d.board.set(d.g, { last: m });
-    d.board.animate(m.from, m.to);
-    sfx.move(m);
-    dnote();
-    drillStep();
-  }, 600);
-}
-function drillMove(from, to, anim) {
-  const d = D;
-  if (!d || d.g.turn() !== d.side || d.k >= d.ln.moves.length) return;
-  const m = findMove(d.g, from, to);
-  if (!m) { d.board.render(); return; }
-  const br = branches(d.ln, d.k);
-  if (br.has(m.san)) {
-    const ls = br.get(m.san);
-    if (!ls.includes(d.ln)) d.ln = pickLine(ls);
-    d.g.move(m.san);
-    d.k++; d.miss = 0;
-    d.board.set(d.g, { last: m });
-    if (anim) d.board.animate(m.from, m.to);
-    d.board.flash(m.to, 'good', 350);
-    sfx.move(m);
-    dnote();
-    drillStep();
-  } else {
-    d.perfect = false; d.miss++;
-    sfx.bad();
-    d.board.render(); d.board.flash(to, 'bad'); d.board.shake();
-    if (d.miss >= 2) { showAnswer(); say('Not the book move — play the arrow', 'bad'); }
-    else say('Not the book move — try again', 'bad');
+function nextTask() {
+  R.i++;
+  if (R.i >= R.tasks.length) return summary();
+  const t = (R.task = R.tasks[R.i]), ln = t.ln, op = ln.op, n = R.tasks.length;
+  Object.assign(t, { mist: 0, fail: false, pm: 0, shown: false });
+  const learnMode = t.kind === 'learn';
+  show(`
+  ${topbar(MODE[R.mode], 'quit', '', `${op.name}, ${ln.name}`, n > 1 ? `<span class="count">${R.i + 1}/${n}</span>` : '')}
+  <div class="prog"><i id="pg"></i></div>
+  <div class="stage"><div id="bd"></div></div>
+  <div class="strip" id="mv"></div>
+  <div class="pad"><div class="coach" id="note"></div></div>
+  <nav class="dock">${learnMode
+    ? `<button data-act="restart">${icon('restart')}<span>Restart line</span></button>`
+    : `<button data-act="hint">${icon('bulb')}<span>Hint</span></button><button data-act="reveal">${icon('eye')}<span>Show move</span></button>${t.kind === 'pos' ? '' : `<button data-act="restart">${icon('restart')}<span>Restart</span></button>`}`}</nav>`);
+  R.board = new Board($('#bd'), { onMove: trainerMove });
+  R.board.side = op.side;
+  if (t.kind === 'pos') {
+    R.k = t.k;
+    R.g = new Chess(ln.fens[t.k]);
+    R.board.set(R.g, { flip: op.side === 'b', last: ln.vm[t.k - 1] });
+    stripT(); prog();
+    R.board.interactive = true;
+    coach('you', 'Find the book move', `${colour(t.k - 1)} just played ${moveLabel(t.k - 1, ln.moves[t.k - 1])}. What do you play?`);
+    return;
   }
+  R.k = 0;
+  R.g = new Chess();
+  R.board.set(R.g, { flip: op.side === 'b' });
+  stripT();
+  if (learnMode) coach('info', 'New line', `Follow the arrows and read why each move is played. ${op.side === 'b' ? 'White moves first.' : ''}`);
+  step();
 }
-function bookMove() { return D.g.moves({ verbose: true }).find(x => x.san === D.ln.moves[D.k]); }
-function showAnswer() {
-  const d = D;
-  if (!d || d.k >= d.ln.moves.length || d.g.turn() !== d.side) return;
-  const m = bookMove(), c = COMMENTS.get(fen4(d.g.fen()) + '|' + m.san);
-  d.perfect = false;
-  d.board.hintSq = null; d.board.arrow = { from: m.from, to: m.to }; d.board.render();
-  $('#note').innerHTML = `<b>Book move: ${moveLabel(d.k, m.san)}</b>${c ? `<p>${c}</p>` : ''}`;
+const stripT = () => strip($('#mv'), R.task.ln.moves.slice(0, R.k), R.k);
+function prog(done) {
+  const t = R.task, frac = done ? 1 : t.kind === 'pos' ? 0 : R.k / t.ln.moves.length;
+  const el = $('#pg'); if (el) el.style.width = (((R.i + frac) / R.tasks.length) * 100).toFixed(1) + '%';
+}
+function arrowFor(ln, k) { const m = ln.vm[k]; return { from: m.from, to: m.to }; }
+function prompt() {
+  const t = R.task, ln = t.ln, k = R.k;
+  const prev = k > 0 ? `<span class="prev">${colour(k - 1)} played ${moveLabel(k - 1, ln.moves[k - 1])}${commentAt(ln, k) ? `: ${commentAt(ln, k)}` : '.'}</span>` : '';
+  if (t.kind === 'learn') coach('hint', `Play ${moveLabel(k, ln.moves[k])}`, prev + (commentAt(ln, k + 1) || 'Follow the arrow.'));
+  else coach('you', 'Your move', prev);
+}
+function step() {
+  const t = R.task, ln = t.ln;
+  prog();
+  if (R.k >= ln.moves.length) return finishLine();
+  if (isMine(ln, R.k)) {
+    if (t.kind === 'learn' && !R.board.arrow) { R.board.arrow = arrowFor(ln, R.k); R.board.render(); }
+    R.board.interactive = true;
+    prompt();
+    return;
+  }
+  R.board.interactive = false;
+  later(() => {
+    if (!R || R.task !== t) return;
+    const m = R.g.move(ln.moves[R.k]);
+    R.k++;
+    const nextMine = R.k < ln.moves.length && t.kind === 'learn';
+    R.board.set(R.g, { last: m, arrow: nextMine ? arrowFor(ln, R.k) : null });
+    R.board.animate(m.from, m.to);
+    sfx.move(m);
+    stripT();
+    step();
+  }, R.k === 0 ? 450 : 650);
+}
+function failPly() {
+  const t = R.task;
+  if (t.fail || t.kind === 'learn') return;
+  t.fail = true; t.mist++;
+  today().t++; R.stats.t++;
+  miss(t.ln, R.k);
+}
+function trainerMove(from, to, anim) {
+  const t = R && R.task;
+  if (!t || !R.board.interactive) return;
+  const ln = t.ln, m = findMove(R.g, from, to);
+  if (!m) { R.board.render(); return; }
+  if (m.san === ln.moves[R.k]) {
+    if (t.kind !== 'learn' && !t.fail) { today().t++; today().c++; R.stats.t++; R.stats.c++; hit(ln, R.k); }
+    Object.assign(t, { fail: false, pm: 0 });
+    R.g.move(m.san);
+    R.k++;
+    R.board.set(R.g, { last: m });
+    if (anim) R.board.animate(m.from, m.to);
+    R.board.flash(m.to, 'good', 380);
+    sfx.move(m);
+    stripT();
+    save();
+    if (t.kind === 'pos') return finishPos();
+    return step();
+  }
+  sfx.bad();
+  R.board.render();
+  R.board.flash(to, 'bad');
+  R.board.shake();
+  if (t.kind === 'learn') { coach('bad', 'Follow the arrow', `Play ${moveLabel(R.k, ln.moves[R.k])}. ${commentAt(ln, R.k + 1)}`); return; }
+  failPly();
+  t.pm++;
+  save();
+  if (t.pm >= 2) reveal('That is not it. Here is the book move.');
+  else coach('bad', 'Not the book move', 'Try again. Use Hint if you are stuck.');
+}
+function reveal(title) {
+  const t = R && R.task;
+  if (!t || !R.board.interactive || t.kind === 'learn') return;
+  failPly(); save();
+  t.shown = true;
+  R.board.hintSq = null;
+  R.board.arrow = arrowFor(t.ln, R.k);
+  R.board.render();
+  coach('hint', title || `Play ${moveLabel(R.k, t.ln.moves[R.k])}`, commentAt(t.ln, R.k + 1) || 'This is the book move here.');
 }
 function hint() {
-  const d = D;
-  if (!d || d.k >= d.ln.moves.length || d.g.turn() !== d.side) return;
-  d.perfect = false;
-  if (d.board.hintSq || d.board.arrow) { showAnswer(); say('Play the arrow move', 'hint'); return; }
-  d.board.hintSq = bookMove().from; d.board.render();
-  say('Hint: move this piece (tap again for the square)', 'hint');
+  const t = R && R.task;
+  if (!t || !R.board.interactive || t.kind === 'learn') return;
+  if (R.board.hintSq || R.board.arrow) return reveal();
+  failPly(); save();
+  R.board.hintSq = t.ln.vm[R.k].from;
+  R.board.render();
+  coach('hint', 'Move this piece', 'Tap Hint again to see the square.');
 }
 function restart() {
-  if (!D) return;
+  const t = R && R.task;
+  if (!t || t.kind === 'pos') return;
   stopTimers();
-  Object.assign(D, { g: new Chess(), k: 0, miss: 0 });
-  $('#ov').innerHTML = '';
-  D.board.set(D.g, {});
-  drillStep();
+  Object.assign(t, { fail: false, pm: 0 });
+  R.k = 0;
+  R.g = new Chess();
+  R.board.set(R.g, {});
+  stripT();
+  step();
 }
-function drillDone() {
-  const d = D;
-  d.board.interactive = false;
-  record(d.ln, d.perfect);
-  later(sfx.done, 150);
-  say(d.perfect ? 'Perfect line!' : 'Line complete', 'good');
-  const more = d.mode === 'review' ? dueLines().length > 0 : true;
-  const days = IV[Math.min(rec(d.ln).streak, 5)];
-  $('#ov').innerHTML = `<div class="sheet"><div class="big">${d.perfect ? '🏆' : '✅'}</div><h2>${d.perfect ? 'Perfect!' : 'Line complete'}</h2><p><b>${d.ln.name}</b></p>
-  <p class="muted small">+${d.perfect ? 10 : 3} XP · ${d.perfect ? `next review in ${days} day${days > 1 ? 's' : ''}` : 'no worries — it comes back until it sticks'}</p>
-  <div class="row2"><button class="btn" data-act="learn" data-id="${d.ln.op.id}" data-li="${d.ln.i}">📖 Study it</button>${more ? '<button class="btn primary" data-act="d-next">Next line →</button>' : '<button class="btn primary" data-act="home">Done</button>'}</div></div>`;
+function finishLine() {
+  const t = R.task, ln = t.ln, perfect = !t.mist;
+  R.board.interactive = false;
+  let res;
+  if (t.kind === 'learn' && !rec(ln)) { learned(ln); addXP(10); res = { before: 0, after: 1, wasDue: false }; }
+  else { res = reviewed(ln, t.kind === 'learn' ? true : perfect); addXP(perfect ? 15 : 5); }
+  today().n++;
+  R.stats.lines++;
+  if (perfect) R.stats.perfect++;
+  if (!perfect && R.mode === 'session' && !R.requeued.has(ln.id)) { R.requeued.add(ln.id); R.tasks.push({ kind: 'review', ln }); }
+  save();
+  prog(true);
+  later(sfx.done, 120);
+  later(() => resultSheet(t, perfect, res), 450);
+}
+function resultSheet(t, perfect, res) {
+  const ln = t.ln, r = rec(ln), more = R.i < R.tasks.length - 1, single = R.tasks.length === 1;
+  const learnedNow = t.kind === 'learn' && res.before === 0;
+  const title = learnedNow ? 'Line learned' : perfect ? 'Perfect' : `${plural(t.mist, 'mistake')}`;
+  let note;
+  if (learnedNow) note = `First review ${fmtDue(r.due)}. Each perfect review moves it up a level.`;
+  else if (r.lvl >= MAX && perfect) note = `Mastered. Next check ${fmtDue(r.due)}.`;
+  else if (perfect && res.after > res.before) note = `Up to level ${r.lvl}. Next review ${fmtDue(r.due)}.`;
+  else if (perfect) note = `Extra practice. Your next scheduled review is still ${fmtDue(r.due)}.`;
+  else note = `Down to level ${r.lvl}. It comes back ${fmtDue(r.due)}, and the moves you missed go to Weak moves.`;
+  sheet(`
+    <div class="res ${perfect ? 'ok' : 'meh'}">
+      <span class="res-ic">${icon(perfect ? 'check' : 'restart')}</span>
+      <h2>${title}</h2>
+      <p class="muted">${ln.op.name}, ${ln.name}</p>
+      <div class="lvl">${bars(r.lvl)}<span>Level ${r.lvl} of ${MAX}</span></div>
+      <p class="note">${note}</p>
+      <div class="actions">
+        <button class="btn" data-act="study" data-id="${ln.op.id}" data-li="${ln.i}">Study the line</button>
+        <button class="btn go" data-act="${more ? 'next-task' : single ? 'done' : 'finish'}">${more ? 'Continue' : single ? 'Done' : 'See results'}</button>
+      </div>
+    </div>`);
+}
+function finishPos() {
+  const t = R.task, ok = !t.mist;
+  R.board.interactive = false;
+  R.stats.n++;
+  if (ok) { R.stats.ok++; addXP(R.mode === 'weak' ? 3 : 2); }
+  today().n++;
+  save();
+  prog(true);
+  const c = commentAt(t.ln, R.k);
+  const more = R.i < R.tasks.length - 1;
+  if (ok) { sfx.good(); coach('good', 'Correct', c); later(nextTask, 1300); }
+  else coach('info', 'Now you have it', c, `<button class="btn go sm" data-act="${more ? 'next-task' : 'finish'}">${more ? 'Next position' : 'See results'}</button>`);
+}
+function summary() {
+  const s = R.stats, pos = R.mode === 'test' || R.mode === 'weak', weak = weakList().length;
+  const acc = s.t ? Math.round((100 * s.c) / s.t) : 100;
+  const head = pos ? `${s.ok} of ${s.n} correct` : R.mode === 'session' ? 'Session complete' : 'Practice complete';
+  const sub = pos
+    ? (s.ok === s.n ? 'Every move found. Those lines are sticking.' : 'The ones you missed are saved in Weak moves.')
+    : `${plural(s.lines, 'line')} trained, ${s.perfect} without a mistake.`;
+  show(`
+  ${topbar(MODE[R.mode], 'done')}
+  <section class="sum">
+    <span class="sum-ic">${icon('award')}</span>
+    <h1 class="display">${head}</h1>
+    <p class="lead">${sub}</p>
+    <div class="trio">
+      <div><b>${pos ? Math.round((100 * s.ok) / Math.max(1, s.n)) + '%' : acc + '%'}</b><span>Accuracy</span></div>
+      <div><b>+${s.xp}</b><span>XP</span></div>
+      <div><b>${streak()}</b><span>Day streak</span></div>
+    </div>
+    <div class="actions one">
+      ${weak && R.mode !== 'weak' ? `<button class="btn" data-act="weak">Fix ${plural(weak, 'weak move')}</button>` : ''}
+      <button class="btn go" data-act="done">Done</button>
+    </div>
+  </section>`);
+}
+function goBack() {
+  const b = R && R.back;
+  R = null;
+  if (b && b.op) return openingView(b.op);
+  openTab(b && b.tab ? b.tab : 'train');
 }
 
-/* ---------------- taps ---------------- */
-const NAV = new Set(['home', 'open', 'learn', 'drill', 'drill-line', 'review', 'd-next', 'side']);
+/* --- building training runs --- */
+function sessionTasks() {
+  const { due, fresh } = plan();
+  return [...due.map(ln => ({ kind: 'review', ln })), ...fresh.map(ln => ({ kind: 'learn', ln }))];
+}
+function practiceTasks(op) {
+  const due = op.lines.filter(isDue).map(ln => ({ kind: 'review', ln }));
+  if (due.length) return due;
+  return shuffle(op.lines.filter(l => rec(l))).sort((a, b) => level(a) - level(b)).slice(0, 5).map(ln => ({ kind: 'practice', ln }));
+}
+function testTasks(n = 10) {
+  const seen = new Set(), pool = [];
+  for (const ln of ALL) {
+    if (!rec(ln)) continue;
+    for (let k = 2; k < ln.moves.length; k++) {
+      if (!isMine(ln, k)) continue;
+      const key = fen4(ln.fens[k]) + ln.moves[k];
+      if (!seen.has(key)) { seen.add(key); pool.push({ kind: 'pos', ln, k }); }
+    }
+  }
+  return shuffle(pool).slice(0, n);
+}
+const weakTasks = () => shuffle(weakList()).slice(0, 15).map(w => ({ kind: 'pos', ln: w.ln, k: w.k }));
+
+/* ================= taps ================= */
 document.addEventListener('click', e => {
   const b = e.target.closest('[data-act]');
-  if (!b) return;
+  if (!b || b.disabled) return;
   audio();
-  const a = b.dataset.act, id = b.dataset.id, li = b.dataset.li != null ? +b.dataset.li : null;
+  const a = b.dataset.act, id = b.dataset.id, li = b.dataset.li != null ? +b.dataset.li : 0;
   switch (a) {
-    case 'home': home(); break;
-    case 'open': openView(id); break;
-    case 'learn': learnView(id, li ?? 0, 0); break;
-    case 'drill': startDrill('op', id); break;
-    case 'drill-line': startDrill('op', id, li); break;
-    case 'review': startDrill('review'); break;
-    case 'd-next': startDrill(D.mode, D.opId); break;
-    case 'sound': S.sound = !S.sound; save(); home(); break;
-    case 'side': S.sides[id] = drillSide(byId[id]) === 'w' ? 'b' : 'w'; save(); openView(id); break;
-    case 'flip': L.flip = !L.flip; learnShow(false); break;
-    case 'l-next': if (L.k < L.ln.moves.length) { L.k++; sfx.move(L.ln.vm[L.k - 1]); learnShow(true); } break;
-    case 'l-prev': if (L.k > 0) { L.k--; learnShow(false); } break;
-    case 'l-first': L.k = 0; learnShow(false); break;
-    case 'l-last': L.k = L.ln.moves.length; learnShow(false); break;
-    case 'l-jump': L.k = +b.dataset.k; learnShow(false); break;
-    case 'l-alt': sfx.move(L.op.lines[li].vm[L.k]); learnView(L.op.id, li, L.k + 1, true); break;
-    case 'd-hint': hint(); break;
-    case 'd-show': showAnswer(); say('Play the arrow move', 'hint'); break;
-    case 'd-restart': restart(); break;
+    case 'tab': openTab(id); break;
+    case 'side': sideTab = id; openingsTab(); break;
+    case 'open': openingView(id); break;
+    case 'line': lineView(id, li); break;
+    case 'study': closeSheet(); R = null; lineView(id, li); break;
+    case 'session': run('session', sessionTasks(), { tab: 'train' }); break;
+    case 'learn': run('learn', [{ kind: 'learn', ln: byId[id].lines[li] }], app.classList.contains('has-tabs') ? { tab } : { op: id }); break;
+    case 'practice': run('practice', practiceTasks(byId[id]), { op: id }); break;
+    case 'practice-line': { const ln = byId[id].lines[li]; run('practice', [{ kind: isDue(ln) ? 'review' : 'practice', ln }], { op: id }); break; }
+    case 'test': run('test', testTasks(), { tab }); break;
+    case 'weak': run('weak', weakTasks(), { tab: tab === 'progress' ? 'progress' : 'train' }); break;
+    case 'next-task': closeSheet(); nextTask(); break;
+    case 'finish': closeSheet(); summary(); break;
+    case 'done': closeSheet(); goBack(); break;
+    case 'quit': goBack(); break;
+    case 'hint': hint(); break;
+    case 'reveal': reveal(); break;
+    case 'restart': restart(); break;
+    case 'v-flip': V.flip = !V.flip; studyShow(false); break;
+    case 'v-next': if (V.k < V.ln.moves.length) { V.k++; sfx.move(V.ln.vm[V.k - 1]); studyShow(true); } break;
+    case 'v-prev': if (V.k > 0) { V.k--; studyShow(false); } break;
+    case 'v-first': V.k = 0; studyShow(false); break;
+    case 'v-last': V.k = V.ln.moves.length; studyShow(false); break;
+    case 'v-jump': V.k = +b.dataset.k; studyShow(false); break;
+    case 'v-alt': sfx.move(V.op.lines[li].vm[V.k]); lineView(V.op.id, li, V.k + 1, true); break;
+    case 'sound': S.sound = !S.sound; save(); progressTab(); break;
+    case 'theme': S.theme = id; save(); applyTheme(); progressTab(); break;
+    case 'perday': S.perDay = +id; save(); progressTab(); break;
+    case 'reset':
+      sheet(`<div class="res"><h2>Reset all progress?</h2><p class="note">This clears every learned line, review date, weak move, XP and your streak on this phone. It can't be undone.</p>
+        <div class="actions"><button class="btn" data-act="sheet-close">Cancel</button><button class="btn danger-btn" data-act="reset-yes">Reset</button></div></div>`, true);
+      break;
+    case 'reset-yes':
+      Object.assign(S, { lines: {}, weak: {}, log: {}, xp: 0 });
+      save(); closeSheet(); toast('Progress reset'); progressTab();
+      break;
+    case 'sheet-close': closeSheet(); break;
   }
-  if (NAV.has(a)) window.scrollTo(0, 0);
 });
 document.addEventListener('keydown', e => {
-  if (e.key === 'Enter' && e.target.matches('[role="button"]')) e.target.click();
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('[role="button"]')) { e.preventDefault(); e.target.click(); }
 });
 
-home();
+applyTheme();
+openTab('train');
