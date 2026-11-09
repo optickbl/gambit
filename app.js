@@ -90,7 +90,7 @@ const shuffle = a => { for (let i = a.length - 1; i > 0; i--) { const j = Math.f
 /* ================= saved progress ================= */
 const KEY = 'gambit.v2';
 const FRESH = () => ({ lines: {}, weak: {}, log: {}, xp: 0, pz: {}, prating: 1000, pn: 0, eg: {}, games: { w: 0, l: 0, d: 0 } });
-const S = { ...FRESH(), sound: true, theme: 'green', perDay: 2, bot: 1 };
+const S = { ...FRESH(), sound: true, theme: 'green', perDay: 2, bot: 1, warn: true };
 try {
   const saved = localStorage.getItem(KEY);
   if (saved) Object.assign(S, JSON.parse(saved));
@@ -512,6 +512,8 @@ function openingsTab() {
   $$('[data-mini]').forEach(el => miniBoard(el, byId[el.dataset.mini]));
 }
 
+// redraw Progress after a setting changes, staying where you were on the page
+function settingsChanged() { const y = window.scrollY; progressTab(); app.classList.remove('enter'); window.scrollTo(0, y); }
 function progressTab() {
   const c = counts(), acc = accuracy(), total = ALL.length, weak = weakList().length;
   const base = noon(), dow = (new Date(base).getDay() + 6) % 7, start = base - (dow + 28) * DAY;
@@ -546,6 +548,7 @@ function progressTab() {
   <h2 class="h2">Settings</h2>
   <div class="group">
     <div class="srow"><span>Sound</span><button class="switch${S.sound ? ' on' : ''}" role="switch" aria-checked="${S.sound}" aria-label="Sound" data-act="sound"><i></i></button></div>
+    <div class="srow"><span>Warn before blunders</span><button class="switch${S.warn ? ' on' : ''}" role="switch" aria-checked="${S.warn}" aria-label="Warn before blunders" data-act="warn"><i></i></button></div>
     <div class="srow"><span>Board</span><div class="seg sm">${[['green', 'Green'], ['brown', 'Wood'], ['blue', 'Slate']].map(([v, l]) => `<button class="${S.theme === v ? 'on' : ''}" data-act="theme" data-id="${v}">${l}</button>`).join('')}</div></div>
     <div class="srow"><span>New lines a day</span><div class="seg sm">${[1, 2, 3, 5].map(v => `<button class="${S.perDay === v ? 'on' : ''}" data-act="perday" data-id="${v}">${v}</button>`).join('')}</div></div>
     <div class="srow link-row" role="button" tabindex="0" data-act="intro"><span>How Gambit works</span>${icon('next', 'chev')}</div>
@@ -1303,8 +1306,13 @@ function egWatchStep(me) {
 /* ================= play the computer ================= */
 const START = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 const BOTS = [['Beginner', 0, 1], ['Casual', 3, 3], ['Club', 8, 6], ['Strong', 15, 0]]; // name, skill level, depth (0 = timed)
+const PIECE_NAME = { p: 'pawn', n: 'knight', b: 'bishop', r: 'rook', q: 'queen', k: 'king' };
+// G.view: null while you are on the game itself, or the number of moves shown while you look back
+// G.canMove: whether the game is waiting for your move (the board only takes it when you are not looking back)
+// G.note: what the coach says about the game, shown again when you come back from looking back
 let G = null, pend = null;
 const gAlive = me => G === me && me.board.el.isConnected;
+const gLast = me => me.g.history({ verbose: true }).pop() || null;
 function playSheet(fen, side, back) {
   pend = { fen, side, back };
   const fresh = fen === START;
@@ -1317,48 +1325,197 @@ function playSheet(fen, side, back) {
 function playStart() {
   closeSheet();
   const { fen, side, back } = pend;
-  G = { g: new Chess(fen), side, back, start: fen, over: false };
+  G = { g: new Chess(fen), side, back, start: fen, over: false, view: null, canMove: false, stuck: false, note: null, hint: null };
   show(`
   ${topbar('Play the computer', 'g-quit', '', `${BOTS[S.bot][0]} level, you play ${side === 'w' ? 'White' : 'Black'}`)}
   <div class="stage"><div id="bd"></div></div>
   <div class="strip" id="mv"></div>
   <div class="pad"><div class="coach" id="note"></div></div>
-  <nav class="dock"><button data-act="g-undo">${icon('undo')}<span>Take back</span></button><button data-act="g-hint">${icon('bulb')}<span>Hint</span></button><button data-act="g-resign">${icon('flag')}<span>Resign</span></button></nav>`);
+  <nav class="dock">
+    <button data-act="g-undo">${icon('undo')}<span>Take back</span></button>
+    <button data-act="g-hint">${icon('bulb')}<span>Hint</span></button>
+    <button data-act="g-resign">${icon('flag')}<span>Resign</span></button>
+    <button class="step" data-act="g-prev" aria-label="Previous move">${icon('back')}</button>
+    <button class="step" data-act="g-next" aria-label="Next move">${icon('next')}</button>
+  </nav>`);
   G.board = new Board($('#bd'), { onMove: gMove });
   G.board.side = side;
+  // while you look back, touching the board brings you back to the game
+  G.board.el.addEventListener('pointerdown', () => { if (G && G.view != null) gGo(Infinity); });
   soundSide = side;
   G.board.set(G.g, { flip: side === 'b' });
   gTurn();
 }
-const gStrip = () => { const h = G.g.history(); strip($('#mv'), h, h.length, null, startPly(G.start)); };
+function gNote(me, kind, title, text = '') {
+  me.note = [kind, title, text];
+  if (me.view == null) coach(kind, title, text);
+}
+function gLet(me, on) {
+  me.canMove = on;
+  if (me.view == null) me.board.interactive = on;
+}
 function gTurn() {
   const me = G;
-  gStrip();
   if (gOver()) return;
-  if (me.g.turn() === me.side) { me.board.interactive = true; coach('you', 'Your move', me.g.inCheck() ? 'You are in check.' : ''); return; }
-  me.board.interactive = false;
-  coach('them', 'The computer is thinking…');
-  const [, skill, depth] = BOTS[S.bot];
-  engine().search(me.g.fen(), depth ? { depth, skill } : { movetime: 1000, skill }).then(r => {
-    if (!gAlive(me) || me.over || me.g.turn() === me.side) return;
-    if (!r.best) { coach('bad', 'The computer stopped', 'Tap Take back, or start a new game.'); return; }
-    const m = uciMove(me.g, r.best);
-    me.board.set(me.g, { last: m });
-    me.board.animate(m.from, m.to);
-    sfx.move(m);
-    gTurn();
-  });
+  if (me.g.turn() === me.side) {
+    gLet(me, true);
+    gNote(me, 'you', 'Your move', me.g.inCheck() ? 'You are in check.' : '');
+    gPrecheck(me);
+  } else {
+    gLet(me, false);
+    gNote(me, 'them', 'The computer is thinking…');
+    // the computer's thinking time counts from your move, so the blunder check is part of it
+    const [, skill, depth] = BOTS[S.bot], t0 = me.movedAt || Date.now();
+    me.movedAt = 0;
+    engine().search(me.g.fen(), depth ? { depth, skill } : { movetime: 1000, skill }).then(r => {
+      if (!gAlive(me) || me.over || me.g.turn() === me.side) return;
+      const left = r.best ? gThinkTime(me, r.best) - (Date.now() - t0) : 0;
+      if (left > 0) later(() => gReply(me, r), left);
+      else gReply(me, r);
+    });
+  }
+  gShow();
+}
+// how long the computer takes to answer, so it feels like a person across the board:
+// quick with a forced move, a recapture or an opening move, longer when the position needs thought
+function gThinkTime(me, best) {
+  const g = me.g, prev = gLast(me), r = (a, b) => a + (b - a) * Math.random();
+  let ms;
+  if (g.moves().length === 1) ms = r(500, 900);
+  else if (prev && prev.captured && best.slice(2, 4) === prev.to) ms = r(800, 1600);
+  else if (me.start === START && g.history().length < 8) ms = r(900, 2000);
+  else if (g.inCheck()) ms = r(1000, 2500);
+  else ms = 1500 + 3500 * Math.random() ** 1.6;   // usually 2 to 4 seconds, now and then up to 5
+  return ms * ([0.9, 1, 1.1, 1.2][S.bot] || 1);    // stronger levels take a little longer
+}
+function gReply(me, r) {
+  if (!gAlive(me) || me.over || me.g.turn() === me.side) return;
+  if (!r.best) { me.stuck = true; gNote(me, 'bad', 'The computer stopped', 'Tap Take back, or start a new game.'); gShow(); return; }
+  const m = uciMove(me.g, r.best);
+  // while you look back, the board stays where you are; the move still sounds and shows in the list
+  if (me.view == null) { me.board.set(me.g, { last: m }); me.board.animate(m.from, m.to); }
+  sfx.move(m);
+  gTurn();
 }
 function gMove(from, to, anim) {
   const me = G;
-  if (!me || me.over || !me.board.interactive) return;
+  if (!me || me.over || !me.canMove || me.view != null) return;
   const m = findMove(me.g, from, to);
   if (!m) { me.board.render(); return; }
+  const fen = me.g.fen(), key = `${fen} ${m.san}`;
   me.g.move(m.san);
+  me.hint = null;
+  me.movedAt = Date.now();
   me.board.set(me.g, { last: m });
   if (anim) me.board.animate(m.from, m.to);
   sfx.move(m);
+  // a move you already chose to play after a warning is not questioned again
+  if (!S.warn || me.warned === key) return gTurn();
+  gLet(me, false);
+  gNote(me, 'them', 'The computer is thinking…');
+  gShow();
+  const after = me.g.fen();
+  gCheck(me, fen, m).then(why => {
+    if (!gAlive(me) || me.over || me.g.fen() !== after) return;
+    if (!why) return gTurn();
+    me.warned = key;
+    me.pending = m;
+    if (me.view != null) gGo(Infinity);
+    gNote(me, 'hint', 'Are you sure?', why);
+    sheet(`<div class="res meh"><span class="res-ic">${icon('alert')}</span><h2>Are you sure?</h2><p class="note">${why}</p>
+      <div class="actions"><button class="btn" data-act="g-anyway">Play it anyway</button><button class="btn go" data-act="g-rethink">Think again</button></div></div>`);
+  });
+}
+/* --- blunder warning --- */
+const VAL = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
+// while it is your move, the engine quietly scores the position, so your move can be checked straight away
+function gPrecheck(me) {
+  if (!S.warn) return;
+  const fen = me.g.fen();
+  if (!me.pre || me.pre.fen !== fen) me.pre = { fen, p: engine().search(fen, { movetime: 400 }) };
+}
+// is the move you just played a big blunder? Returns what to tell you, or null when it is fine
+async function gCheck(me, fen, m) {
+  const g = me.g;
+  if (g.isCheckmate()) return null;
+  const pre = await (me.pre && me.pre.fen === fen ? me.pre.p : engine().search(fen, { movetime: 400 }));
+  if (!pre || !pre.score) return null;
+  if (pre.best && pre.best.slice(0, 4) === m.from + m.to) return null;      // the engine's own choice
+  const clamp = cp => Math.max(-1500, Math.min(1500, cp)), before = clamp(toCp(pre.score));
+  let after, why = '';
+  if (g.isGameOver()) { after = 0; why = 'It ends the game in a draw.'; }
+  else {
+    const r = await engine().search(g.fen(), { movetime: 500 });
+    if (!r || !r.score) return null;
+    const doomed = pre.score.mate != null && pre.score.mate < 0;            // you were being mated anyway
+    if (r.score.mate != null && r.score.mate > 0 && !doomed) return r.score.mate <= 3 ? 'It lets the computer checkmate you.' : 'It lets the computer force checkmate.';
+    after = clamp(-toCp(r.score));
+    why = gLoses(g.fen(), r.pv, me.side);
+  }
+  // only real blunders: losing a piece or more, not small slips
+  const loss = before - after, drop = winP(before) - winP(after);
+  if (loss < 250 || (drop < 0.15 && loss < 450)) return null;
+  return why || 'The computer has a strong answer to it.';
+}
+// what the computer's best line wins from you, in words
+function gLoses(fen, pv, side) {
+  const g = new Chess(fen);
+  let net = 0, big = null;
+  for (const u of (pv || []).slice(0, 10)) {
+    let mv = null;
+    try { mv = g.move({ from: u.slice(0, 2), to: u.slice(2, 4), promotion: u[4] }); } catch { break; }
+    if (!mv || !mv.captured) continue;
+    if (mv.color === side) net -= VAL[mv.captured];
+    else { net += VAL[mv.captured]; if (!big || VAL[mv.captured] > VAL[big]) big = mv.captured; }
+  }
+  if (net < 2 || !big) return '';
+  return big === 'p' ? 'The computer can win material.' : `The computer can win your ${PIECE_NAME[big]}.`;
+}
+function gRethink() {
+  const me = G, m = me.pending;
+  me.pending = null;
+  me.view = null;
+  me.movedAt = 0;
+  me.g.undo();
+  me.board.set(me.g, { last: gLast(me) });
+  me.board.animate(m.to, m.from);
   gTurn();
+  gNote(me, 'you', 'Your move', `Your move was taken back. Have another look.${me.g.inCheck() ? ' You are in check.' : ''}`);
+}
+// look at the board as it was after k moves of this game; k past the end means back to the game
+function gGo(k) {
+  const me = G;
+  if (!me) return;
+  const hist = me.g.history({ verbose: true }), n = hist.length, cur = me.view ?? n;
+  k = Math.max(0, Math.min(n, k));
+  if (k === cur) return;
+  me.view = k === n ? null : k;
+  if (me.view == null) {
+    me.board.set(me.g, { last: hist[n - 1] || null, arrow: me.hint });
+    me.board.interactive = me.canMove;
+  } else {
+    me.board.set(new Chess(k ? hist[k - 1].after : me.start), { last: hist[k - 1] || null });
+    me.board.interactive = false;
+  }
+  if (k === cur + 1) { const m = hist[k - 1]; me.board.animate(m.from, m.to); sfx.move(m); }
+  else if (k === cur - 1) { const m = hist[k]; me.board.animate(m.to, m.from); }
+  gShow();
+}
+function gShow() {
+  const me = G, hist = me.g.history({ verbose: true }), n = hist.length, from = startPly(me.start), k = me.view ?? n;
+  strip($('#mv'), hist.map(m => m.san), k, 'g-view', from);
+  const prev = $('[data-act="g-prev"]'), next = $('[data-act="g-next"]');
+  if (prev) prev.disabled = k === 0;
+  if (next) { next.disabled = me.view == null; next.classList.toggle('primary', me.view != null); }
+  if (me.view == null) { if (me.note) coach(...me.note); return; }
+  const m = hist[k - 1], nx = hist[k], mine = x => x.color === me.side;
+  const title = m ? `${mine(m) ? 'You' : 'The computer'} played ${moveLabel(from + k - 1, m.san)}`
+    : me.start === START ? 'Start of the game' : 'Starting position';
+  let text = `Next ${mine(nx) ? 'you' : 'the computer'} played ${moveLabel(from + k, nx.san)}`;
+  if (nx.captured) text += `, taking ${mine(nx) ? 'the computer’s' : 'your'} ${PIECE_NAME[nx.captured]}`;
+  text += '.';
+  if (!me.over && me.canMove) text += ' It’s your move in the game.';
+  coach('info', title, text, '<button class="btn sm" data-act="g-live">Back to game</button>');
 }
 function gOver() {
   const g = G.g;
@@ -1373,42 +1530,52 @@ function gOver() {
   return true;
 }
 function gEnd(res, why) {
-  G.over = true;
-  G.result = res;
-  G.board.interactive = false;
+  const me = G;
+  me.over = true;
+  me.result = res;
+  // the game is over: show the final position, even if you were looking back
+  if (me.view != null) { me.view = null; me.board.set(me.g, { last: gLast(me) }); }
+  gLet(me, false);
   S.games[res]++;
   today().n++;
   if (res === 'w') addXP(25);
   later(sfx.done, 100);
   save();
   const title = { w: 'You won', l: 'You lost', d: 'Draw' }[res];
-  coach(res === 'w' ? 'good' : res === 'l' ? 'bad' : 'info', title, why);
-  later(() => sheet(`<div class="res ${res === 'w' ? 'ok' : 'meh'}"><span class="res-ic">${icon(res === 'w' ? 'check' : res === 'l' ? 'flag' : 'restart')}</span><h2>${title}</h2><p class="muted">${why}</p>
+  gNote(me, res === 'w' ? 'good' : res === 'l' ? 'bad' : 'info', title, why);
+  gShow();
+  later(() => gAlive(me) && me.over && sheet(`<div class="res ${res === 'w' ? 'ok' : 'meh'}"><span class="res-ic">${icon(res === 'w' ? 'check' : res === 'l' ? 'flag' : 'restart')}</span><h2>${title}</h2><p class="muted">${why}</p>
     <p class="note">Against the computer: ${S.games.w} won, ${S.games.l} lost, ${S.games.d} drawn.</p>
     <div class="actions"><button class="btn" data-act="g-quit">Done</button><button class="btn" data-act="g-review">Review</button><button class="btn go" data-act="g-again">Play again</button></div></div>`), 700);
 }
 function gUndo() {
   const me = G;
-  if (!me || (!me.over && !me.board.interactive)) return;
+  if (!me || (!me.over && !me.canMove && !me.stuck)) return;
   if (!me.g.history().length) return;
   closeSheet();
   if (me.over) { S.games[me.result] = Math.max(0, S.games[me.result] - 1); me.over = false; save(); }
+  Object.assign(me, { view: null, hint: null, stuck: false });
   me.g.undo();
   while (me.g.history().length && me.g.turn() !== me.side) me.g.undo();
-  me.board.set(me.g, {});
+  me.board.set(me.g, { last: gLast(me) });
   gTurn();
 }
 function gHint() {
   const me = G;
-  if (!me || me.over || !me.board.interactive) return;
-  me.board.interactive = false;
-  coach('them', 'Looking for a good move…');
+  if (!me || me.over || !me.canMove) return;
+  if (me.view != null) gGo(Infinity);
+  gLet(me, false);
+  gNote(me, 'them', 'Looking for a good move…');
   engine().search(me.g.fen(), { movetime: 800 }).then(r => {
-    if (!gAlive(me) || !r.best) return;
-    me.board.arrow = { from: r.best.slice(0, 2), to: r.best.slice(2, 4) };
-    me.board.render();
-    me.board.interactive = true;
-    coach('hint', 'Try this move', 'This is the computer’s suggestion.');
+    if (!gAlive(me) || me.over) return;
+    gLet(me, true);
+    if (!r.best) gNote(me, 'you', 'Your move', 'No hint this time.');
+    else {
+      me.hint = { from: r.best.slice(0, 2), to: r.best.slice(2, 4) };
+      if (me.view == null) { me.board.arrow = me.hint; me.board.render(); }
+      gNote(me, 'hint', 'Try this move', 'This is the computer’s suggestion.');
+    }
+    gShow();
   });
 }
 /* --- game review --- */
@@ -1575,7 +1742,17 @@ document.addEventListener('click', e => {
     case 'g-again': if (pend) playStart(); break;
     case 'g-undo': gUndo(); break;
     case 'g-hint': gHint(); break;
-    case 'g-resign': if (G && !G.over) gEnd('l', 'You resigned.'); break;
+    case 'g-resign':
+      if (G && !G.over) sheet(`<div class="res"><h2>Resign this game?</h2><p class="note">It counts as a loss.</p>
+        <div class="actions"><button class="btn" data-act="sheet-close">Keep playing</button><button class="btn danger-btn" data-act="g-resign-yes">Resign</button></div></div>`, true);
+      break;
+    case 'g-resign-yes': closeSheet(); if (G && !G.over) gEnd('l', 'You resigned.'); break;
+    case 'g-anyway': closeSheet(); if (G && G.pending) { G.pending = null; G.movedAt = Date.now(); gTurn(); } break;
+    case 'g-rethink': closeSheet(); if (G && G.pending) gRethink(); break;
+    case 'g-prev': if (G) gGo((G.view ?? G.g.history().length) - 1); break;
+    case 'g-next': if (G && G.view != null) gGo(G.view + 1); break;
+    case 'g-view': if (G) gGo(+b.dataset.k); break;
+    case 'g-live': if (G) gGo(Infinity); break;
     case 'g-quit': closeSheet(); gBack(); break;
     case 'g-review': if (G && G.g.history().length) reviewStart(); else toast('No moves to review yet'); break;
     case 'rv-go': if (RV) { RV.k = Math.max(0, Math.min(RV.fens.length - 1, +b.dataset.k)); rvShow(); } break;
@@ -1600,9 +1777,10 @@ document.addEventListener('click', e => {
     case 'v-last': V.k = V.ln.moves.length; studyShow(false); break;
     case 'v-jump': V.k = +b.dataset.k; studyShow(false); break;
     case 'v-alt': sfx.move(V.op.lines[li].vm[V.k]); lineView(V.op.id, li, V.k + 1, true); break;
-    case 'sound': S.sound = !S.sound; save(); progressTab(); break;
-    case 'theme': S.theme = id; save(); applyTheme(); progressTab(); break;
-    case 'perday': S.perDay = +id; save(); progressTab(); break;
+    case 'sound': S.sound = !S.sound; save(); settingsChanged(); break;
+    case 'warn': S.warn = !S.warn; save(); settingsChanged(); break;
+    case 'theme': S.theme = id; save(); applyTheme(); settingsChanged(); break;
+    case 'perday': S.perDay = +id; save(); settingsChanged(); break;
     case 'reset':
       sheet(`<div class="res"><h2>Reset all progress?</h2><p class="note">This clears every learned line, review date, weak move, XP and your streak on this phone. It can't be undone.</p>
         <div class="actions"><button class="btn" data-act="sheet-close">Cancel</button><button class="btn danger-btn" data-act="reset-yes">Reset</button></div></div>`, true);
@@ -1647,6 +1825,11 @@ document.addEventListener('click', e => {
 });
 document.addEventListener('keydown', e => {
   if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('[role="button"]')) { e.preventDefault(); e.target.click(); }
+  // arrow keys step through moves on any screen with move arrows
+  if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !$('.sheet-wrap')) {
+    const b = $(`.dock [aria-label="${e.key === 'ArrowLeft' ? 'Previous' : 'Next'} move"]`);
+    if (b && !b.disabled) { e.preventDefault(); b.click(); }
+  }
 });
 
 applyTheme();
