@@ -35,7 +35,8 @@ export const OPENINGS = [
   lines: [
     { name: 'Main line: Closed Ruy Lopez', pgn: `1.e4 e5 2.Nf3 Nc6 3.Bb5 {The Ruy Lopez: attack the knight that defends e5.} a6 {Morphy Defence: Black asks your bishop what it wants.} 4.Ba4 {Keep the pressure — don't trade yet.} Nf6 5.O-O {Castle! e4 looks loose, but grabbing it opens lines against Black's own king.} Be7 6.Re1 {Now e4 is properly protected.} b5 {Kick the bishop.} 7.Bb3 {From b3 the bishop aims at f7.} d6 8.c3 {Prepares d4 and keeps a retreat on c2 for the bishop.} O-O 9.h3 {Stops ...Bg4, so your d4 push will be stable.} Na5 {Black chases the bishop.} 10.Bc2 c5 11.d4 {Your big centre is complete. Next: Nbd2–f1–g3.}` },
     { name: 'Berlin: 3...Nf6', pgn: `1.e4 e5 2.Nf3 Nc6 3.Bb5 Nf6 {The Berlin Wall — Kramnik used it to beat Kasparov for the world title.} 4.d3 {Avoid the famous Berlin endgame: just protect e4.} Bc5 5.c3 {Prepares d4 and gives the bishop a retreat.} O-O 6.O-O d6 7.h3 {No ...Bg4 pins.} a6 8.Ba4 {Keep the bishop — it will drop back to c2 later.}` },
-    { name: 'Open Ruy: 5...Nxe4', pgn: `1.e4 e5 2.Nf3 Nc6 3.Bb5 a6 4.Ba4 Nf6 5.O-O Nxe4 {Black grabs your e4 pawn.} 6.d4 {Hit back in the centre — you will regain the pawn.} b5 7.Bb3 d5 8.dxe5 {Material is level and your e5 pawn is a thorn.} Be6 9.c3 {Gives the bishop a retreat on c2. Next Nbd2 to challenge the e4 knight.}` }
+    { name: 'Open Ruy: 5...Nxe4', pgn: `1.e4 e5 2.Nf3 Nc6 3.Bb5 a6 4.Ba4 Nf6 5.O-O Nxe4 {Black grabs your e4 pawn.} 6.d4 {Hit back in the centre — you will regain the pawn.} b5 7.Bb3 d5 8.dxe5 {Material is level and your e5 pawn is a thorn.} Be6 9.c3 {Gives the bishop a retreat on c2. Next Nbd2 to challenge the e4 knight.}` },
+    { name: 'Classical: 3...Bc5', pgn: `1.e4 e5 2.Nf3 Nc6 3.Bb5 Bc5 {Classical Defence: the bishop aims at f2.} 4.O-O {Castle first, so there are no tricks against f2 or your king.} Nd4 {Black challenges your f3 knight.} 5.Nxd4 {Take it — Black has to recapture with the bishop.} Bxd4 6.c3 {Kick the bishop and prepare d4.} Bb6 7.d4 {Take the centre and hit the e5 pawn.} c6 {Black kicks your bishop.} 8.Ba4 {Keep the bishop. It can drop back to c2 later and stay active.}` }
   ]
 },
 {
@@ -67,7 +68,8 @@ export const OPENINGS = [
   lines: [
     { name: 'Main line vs ...d5', pgn: `1.d4 d5 2.Bf4 {The London bishop — get it out before e3 locks it in.} Nf6 3.e3 e6 4.Nf3 c5 5.c3 {Your pyramid: c3–d4–e3. Rock solid.} Nc6 6.Nbd2 Bd6 {Black wants to trade off your best bishop.} 7.Bg3 {Keep it! If ...Bxg3, recapture hxg3 and your rook uses the open h-file.} O-O 8.Bd3 {Next: castle, then Ne5 or e4.}` },
     { name: 'Early ...c5 and ...Qb6', pgn: `1.d4 d5 2.Bf4 c5 {Black hits d4 early.} 3.e3 Nc6 4.c3 {Support d4.} Qb6 {Attacks b2 — the London's weak spot.} 5.Qb3 {Defend and offer a queen trade.} c4 {Kicks your queen.} 6.Qc2 {Safe square. Next Nf3, Nbd2 and e4 to hit Black's centre.}` },
-    { name: "Vs King's Indian set-up (...g6)", pgn: `1.d4 Nf6 2.Bf4 g6 {Black fianchettoes.} 3.e3 Bg7 4.Nf3 O-O 5.Be2 {Modest but smart: it covers g4 and h5, so no ...Nh5 or ...Ng4 tricks.} d6 6.h3 {Gives your bishop a retreat on h2.} Nbd7 7.O-O {Then c4 or c3 — solid and safe.}` }
+    { name: "Vs King's Indian set-up (...g6)", pgn: `1.d4 Nf6 2.Bf4 g6 {Black fianchettoes.} 3.e3 Bg7 4.Nf3 O-O 5.Be2 {Modest but smart: it covers g4 and h5, so no ...Nh5 or ...Ng4 tricks.} d6 6.h3 {Gives your bishop a retreat on h2.} Nbd7 7.O-O {Then c4 or c3 — solid and safe.}` },
+    { name: 'Symmetrical: 2...Bf5', pgn: `1.d4 d5 2.Bf4 Bf5 {Black copies your idea.} 3.e3 {Same set-up as always: support d4 and free the f1 bishop.} e6 4.Bd3 {Offer to trade off Black's best bishop.} Bxd3 5.Qxd3 {Your queen recaptures and becomes active.} Nf6 6.Nf3 {Develop and control e5.} c5 7.c3 {Your pyramid again: c3–d4–e3.} Nc6 8.Nbd2 {Next castle, then push e4 — the queen on d3 supports it.}` }
   ]
 },
 {
@@ -87,7 +89,8 @@ export const OPENINGS = [
     { name: 'Closed Sicilian: 2.Nc3', pgn: `1.e4 c5 2.Nc3 {Closed Sicilian — slow and sneaky.} Nc6 3.g3 g6 {Copy the fianchetto.} 4.Bg2 Bg7 5.d3 d6 6.f4 e6 7.Nf3 Nge7 8.O-O O-O {Then ...Rb8 and ...b5: attack on the queenside.}` },
     { name: 'Grand Prix Attack: 3.f4', pgn: `1.e4 c5 2.Nc3 Nc6 3.f4 {Grand Prix Attack — very popular at club level.} g6 4.Nf3 Bg7 5.Bc4 e6 {Blunt the bishop's aim at f7.} 6.O-O Nge7 7.d3 O-O {Next ...d5 to break open the centre.}` },
     { name: 'Moscow: 3.Bb5+', pgn: `1.e4 c5 2.Nf3 d6 3.Bb5+ {Check! White avoids the big main lines.} Bd7 {Offer to trade bishops.} 4.Bxd7+ Qxd7 5.c4 {The Maroczy bind: a grip on d5.} Nc6 6.Nc3 g6 7.d4 cxd4 8.Nxd4 Bg7 {Your bishop pressures the long diagonal.}` },
-    { name: 'Smith-Morra Gambit: 2.d4', pgn: `1.e4 c5 2.d4 cxd4 3.c3 {Smith-Morra Gambit: White gives a pawn for fast development.} dxc3 {Take it.} 4.Nxc3 Nc6 5.Nf3 d6 6.Bc4 e6 {Close the bishop's path to f7.} 7.O-O Nf6 8.Qe2 Be7 9.Rd1 e5 {Block the d-file. You keep the extra pawn safely.}` }
+    { name: 'Smith-Morra Gambit: 2.d4', pgn: `1.e4 c5 2.d4 cxd4 3.c3 {Smith-Morra Gambit: White gives a pawn for fast development.} dxc3 {Take it.} 4.Nxc3 Nc6 5.Nf3 d6 6.Bc4 e6 {Close the bishop's path to f7.} 7.O-O Nf6 8.Qe2 Be7 9.Rd1 e5 {Block the d-file. You keep the extra pawn safely.}` },
+    { name: 'Bowdler Attack: 2.Bc4', pgn: `1.e4 c5 2.Bc4 {A beginner favourite: the bishop aims at f7.} e6 {Blunt the bishop: f7 is covered and ...d5 is coming.} 3.Nc3 a6 {Prepare ...b5 to chase the bishop.} 4.a4 {White stops ...b5.} Nc6 {Develop and control d4.} 5.d3 d5 {Strike the centre and hit the bishop.} 6.exd5 exd5 {Recapture toward the centre; your d5 pawn now hits c4 and e4.} 7.Bb3 Nf6 {Develop with a fine centre. You are already comfortable.}` }
   ]
 },
 {
@@ -104,7 +107,8 @@ export const OPENINGS = [
     { name: 'Advance: 3.e5', pgn: `1.e4 c6 2.d4 d5 3.e5 {Advance: White grabs space.} Bf5 {Get the bishop out before ...e6!} 4.Nf3 e6 5.Be2 c5 {Hit the base of White's pawn chain.} 6.O-O Nc6 7.c3 cxd4 8.cxd4 Nge7 {Plan: ...Nc8, ...Be7 and ...Qb6 — pile up on d4.}` },
     { name: 'Exchange: 3.exd5', pgn: `1.e4 c6 2.d4 d5 3.exd5 cxd5 {Symmetrical centre.} 4.Bd3 Nc6 5.c3 Nf6 6.Bf4 Bg4 {Develop the bishop actively before ...e6.} 7.Qb3 Qd7 {Defend b7 — a queen trade is fine for you.} 8.Nd2 e6 {Solid. Next ...Bd6 and castle.}` },
     { name: 'Panov Attack: 4.c4', pgn: `1.e4 c6 2.d4 d5 3.exd5 cxd5 4.c4 {Panov Attack: White will get an isolated d-pawn.} Nf6 5.Nc3 e6 6.Nf3 Be7 7.cxd5 Nxd5 8.Bd3 Nc6 9.O-O O-O {Later, blockade and attack the lonely d4 pawn.}` },
-    { name: 'Two Knights: 2.Nc3', pgn: `1.e4 c6 2.Nc3 d5 3.Nf3 Bg4 {Pin, and happily trade your bishop for the knight.} 4.h3 Bxf3 5.Qxf3 e6 6.d4 Nf6 {Next ...Nbd7 and ...Be7. Solid and equal.}` }
+    { name: 'Two Knights: 2.Nc3', pgn: `1.e4 c6 2.Nc3 d5 3.Nf3 Bg4 {Pin, and happily trade your bishop for the knight.} 4.h3 Bxf3 5.Qxf3 e6 6.d4 Nf6 {Next ...Nbd7 and ...Be7. Solid and equal.}` },
+    { name: 'Classical: 3.Nd2', pgn: `1.e4 c6 2.d4 d5 3.Nd2 {The same idea as 3.Nc3, keeping the c-pawn free.} dxe4 {Same answer as against 3.Nc3: take on e4. From here it is the Classical line.} 4.Nxe4 Bf5 5.Ng3 Bg6` }
   ]
 },
 {
@@ -122,7 +126,8 @@ export const OPENINGS = [
     { name: 'Tarrasch: 3.Nd2', pgn: `1.e4 e6 2.d4 d5 3.Nd2 c5 {Hit the centre at once.} 4.exd5 Qxd5 {Your queen is safe: no Nc3 possible.} 5.Ngf3 cxd4 6.Bc4 Qd6 7.O-O Nf6 8.Nb3 Nc6 9.Nbxd4 Nxd4 10.Nxd4 a6 {Equal and solid. Next ...Qc7 and ...Bd6.}` },
     { name: 'Classical: 3.Nc3 Nf6 4.e5', pgn: `1.e4 e6 2.d4 d5 3.Nc3 Nf6 {Classical French: develop and hit e4.} 4.e5 Nfd7 5.f4 c5 {Always hit the base of the chain.} 6.Nf3 Nc6 7.Be3 cxd4 8.Nxd4 Bc5 9.Qd2 O-O 10.O-O-O a6 {Opposite castling: race with ...b5–b4 and ...Qa5.}` },
     { name: 'Classical: 4.Bg5', pgn: `1.e4 e6 2.d4 d5 3.Nc3 Nf6 4.Bg5 {Pins your knight.} Be7 {Unpin calmly.} 5.e5 Nfd7 6.Bxe7 Qxe7 7.f4 O-O 8.Nf3 c5 {The French counter-punch: strike d4.}` },
-    { name: 'Exchange: 3.exd5', pgn: `1.e4 e6 2.d4 d5 3.exd5 exd5 {Symmetrical and very safe — your light bishop is free now!} 4.Nf3 Nf6 5.Bd3 Bd6 6.O-O O-O 7.Bg5 Bg4 {Copying is fine here; just watch out for pins.} 8.Nbd2 Nbd7` }
+    { name: 'Exchange: 3.exd5', pgn: `1.e4 e6 2.d4 d5 3.exd5 exd5 {Symmetrical and very safe — your light bishop is free now!} 4.Nf3 Nf6 5.Bd3 Bd6 6.O-O O-O 7.Bg5 Bg4 {Copying is fine here; just watch out for pins.} 8.Nbd2 Nbd7` },
+    { name: "King's Indian Attack: 2.d3", pgn: `1.e4 e6 2.d3 {A slow set-up: White plans Nd2, g3, Bg2 and castling.} d5 {Take your share of the centre anyway.} 3.Nd2 c5 {Grab space in the centre.} 4.Ngf3 Nc6 {Develop and control d4.} 5.g3 Nf6 {Develop and pressure e4.} 6.Bg2 Be7 {Develop, then castle.} 7.O-O O-O {Next ...b5 and ...b4: attack on the queenside while White goes for your king.}` }
   ]
 },
 {
