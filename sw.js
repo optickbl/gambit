@@ -1,5 +1,6 @@
 // Network first, so updates show up straight away; falls back to the cache when offline.
-const CACHE = 'gambit-v4';
+const CACHE = 'gambit-v5';
+const SOUNDS = ['move', 'move-opp', 'capture', 'castle', 'check', 'promote', 'game-end', 'illegal'].map(n => `./sounds/${n}.wav`);
 const FILES = ['./', './index.html', './app.js', './openings.js', './notes.js', './chess.js',
   './puzzles.js', './endgames.js', './engine.js', './engine/stockfish.wasm.js', './engine/stockfish.wasm', './pieces.css', './manifest.webmanifest', './icon-180.png', './icon-192.png',
   './fonts/barlow-latin-400-normal.woff2', './fonts/barlow-latin-500-normal.woff2', './fonts/barlow-latin-600-normal.woff2',
@@ -7,7 +8,7 @@ const FILES = ['./', './index.html', './app.js', './openings.js', './notes.js', 
 
 self.addEventListener('install', e => {
   self.skipWaiting();
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)).catch(() => {}));
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll([...FILES, ...SOUNDS])).catch(() => {}));
 });
 self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
 self.addEventListener('fetch', e => {

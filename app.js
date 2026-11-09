@@ -42,7 +42,7 @@ for (const op of OPENINGS) {
     for (const t of parsePgn(ln.pgn)) {
       const before = fen4(g.fen()), m = g.move(t.san);
       ln.moves.push(m.san);
-      ln.vm.push({ from: m.from, to: m.to, captured: m.captured });
+      ln.vm.push({ from: m.from, to: m.to, captured: m.captured, san: m.san, flags: m.flags, color: m.color, promotion: m.promotion });
       ln.fens.push(g.fen());
       const key = before + '|' + m.san;
       if (t.c && !COMMENTS.has(key)) COMMENTS.set(key, t.c);
@@ -177,7 +177,40 @@ function plan() {
 
 /* ================= sound ================= */
 let AC = null;
-function audio() { try { if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)(); if (AC.state === 'suspended') AC.resume(); } catch {} }
+const BUF = {};
+const SOUND_FILES = ['move', 'move-opp', 'capture', 'castle', 'check', 'promote', 'game-end', 'illegal'];
+let soundSide = 'w'; // the colour you are playing on the current screen
+function audio() {
+  try {
+    if (!AC) { AC = new (window.AudioContext || window.webkitAudioContext)(); loadSounds(); }
+    if (AC.state === 'suspended') AC.resume();
+  } catch {}
+}
+function loadSounds() {
+  for (const n of SOUND_FILES) {
+    fetch(`sounds/${n}.wav`)
+      .then(r => r.arrayBuffer())
+      .then(ab => new Promise((res, rej) => AC.decodeAudioData(ab, res, rej)))
+      .then(b => { BUF[n] = b; })
+      .catch(() => {});
+  }
+}
+function play(n, vol = 1) {
+  if (!S.sound || !AC || !BUF[n]) return false;
+  const s = AC.createBufferSource(), g = AC.createGain();
+  s.buffer = BUF[n];
+  g.gain.value = vol;
+  s.connect(g).connect(AC.destination);
+  s.start();
+  return true;
+}
+// pick the sound the way chess.com does: check > promotion > castling > capture > your move / their move
+function moveSound(m) {
+  if (!m) return;
+  const san = m.san || '', fl = m.flags || '';
+  const n = /[+#]/.test(san) ? 'check' : m.promotion ? 'promote' : /[kq]/.test(fl) ? 'castle' : m.captured ? 'capture' : m.color && m.color !== soundSide ? 'move-opp' : 'move';
+  if (!play(n)) { if (m.captured) { knock(650, 1.8); knock(1400, 0.9); } else knock(1150, 1.5); }
+}
 function tone(f, d, type = 'sine', v = 0.12, at = 0) {
   const a = S.sound && AC; if (!a) return;
   const t = a.currentTime + at, o = a.createOscillator(), g = a.createGain();
@@ -194,10 +227,10 @@ function knock(f, v) {
   s.connect(bp).connect(g).connect(a.destination); s.start();
 }
 const sfx = {
-  move: m => (m && m.captured ? (knock(650, 1.8), knock(1400, 0.9)) : knock(1150, 1.5)),
-  bad: () => tone(150, 0.22, 'square', 0.05),
+  move: moveSound,
+  bad: () => { if (!play('illegal')) tone(150, 0.22, 'square', 0.05); },
   good: () => { tone(880, 0.12, 'sine', 0.07); tone(1320, 0.16, 'sine', 0.06, 0.07); },
-  done: () => [523, 659, 784, 1047].forEach((f, i) => tone(f, 0.25, 'triangle', 0.09, i * 0.08))
+  done: () => { if (!play('game-end')) [523, 659, 784, 1047].forEach((f, i) => tone(f, 0.25, 'triangle', 0.09, i * 0.08)); }
 };
 
 /* ================= icons ================= */
@@ -589,6 +622,7 @@ function lineView(id, li, k = 0, anim = false, resume = false) {
     <button data-act="v-last" aria-label="Go to end">${icon('last')}</button>
   </nav>`);
   V = { op, ln, k, flip, board: new Board($('#bd'), { onMove: studyMove }) };
+  soundSide = op.side;
   V.board.interactive = true;
   studyShow(anim);
 }
@@ -648,6 +682,7 @@ function nextTask() {
     : `<button data-act="hint">${icon('bulb')}<span>Hint</span></button><button data-act="reveal">${icon('eye')}<span>Show move</span></button>${t.kind === 'pos' ? '' : `<button data-act="restart">${icon('restart')}<span>Restart</span></button>`}`}</nav>`);
   R.board = new Board($('#bd'), { onMove: trainerMove });
   R.board.side = op.side;
+  soundSide = op.side;
   if (t.kind === 'pos') {
     R.k = t.k;
     R.g = new Chess(ln.fens[t.k]);
@@ -954,6 +989,7 @@ function themeView(key) {
     <div class="actions"><button class="btn" data-act="theme-demo">See the example</button><button class="btn go" data-act="theme-go" data-id="${key}">${n >= ps.length ? 'Practise again' : n ? 'Continue' : 'Solve puzzles'}</button></div>
   </div>`);
   TV = { key, board: new Board($('#bd')) };
+  soundSide = g.turn();
   TV.board.set(g, { flip: g.turn() === 'b' });
   coach('info', `Example: ${g.turn() === 'w' ? 'White' : 'Black'} to move`, 'Try to spot it, then tap See the example to watch the solution.');
 }
@@ -995,6 +1031,7 @@ function nextPuzzle() {
   <nav class="dock"><button data-act="pz-hint">${icon('bulb')}<span>Hint</span></button><button data-act="pz-show">${icon('eye')}<span>Show move</span></button></nav>`);
   P.board = new Board($('#bd'), { onMove: puzzleMove });
   P.board.side = side;
+  soundSide = side;
   P.board.set(P.g, { flip: side === 'b' });
   P.board.interactive = true;
   coach('you', `${side === 'w' ? 'White' : 'Black'} to move`, P.mixed ? 'Find the best move.' : THEME[p.theme].tip);
@@ -1136,6 +1173,7 @@ function egStart(id, idx, watch = false) {
     : `<button data-act="eg-hint">${icon('bulb')}<span>Hint</span></button><button data-act="eg-undo">${icon('undo')}<span>Take back</span></button><button data-act="eg-restart">${icon('restart')}<span>Restart</span></button>`}</nav>`);
   me.board = new Board($('#bd'), { onMove: egMove });
   me.board.side = l.side;
+  soundSide = l.side;
   me.board.set(me.g, { flip: l.side === 'b' });
   egStrip();
   coach('info', watch ? 'Watch the technique' : goalLine(l), 'The computer is looking at the position…');
@@ -1300,6 +1338,7 @@ function playStart() {
   <nav class="dock"><button data-act="g-undo">${icon('undo')}<span>Take back</span></button><button data-act="g-hint">${icon('bulb')}<span>Hint</span></button><button data-act="g-resign">${icon('flag')}<span>Resign</span></button></nav>`);
   G.board = new Board($('#bd'), { onMove: gMove });
   G.board.side = side;
+  soundSide = side;
   G.board.set(G.g, { flip: side === 'b' });
   gTurn();
 }
@@ -1351,7 +1390,8 @@ function gEnd(res, why) {
   G.board.interactive = false;
   S.games[res]++;
   today().n++;
-  if (res === 'w') { addXP(25); later(sfx.done, 100); }
+  if (res === 'w') addXP(25);
+  later(sfx.done, 100);
   save();
   const title = { w: 'You won', l: 'You lost', d: 'Draw' }[res];
   coach(res === 'w' ? 'good' : res === 'l' ? 'bad' : 'info', title, why);
