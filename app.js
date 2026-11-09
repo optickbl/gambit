@@ -550,7 +550,7 @@ function openingView(id) {
 
 /* ================= study a line (free browsing) ================= */
 let V = null;
-function lineView(id, li, k = 0, anim = false) {
+function lineView(id, li, k = 0, anim = false, resume = false) {
   const op = byId[id], ln = op.lines[li], flip = V && V.op === op ? V.flip : op.side === 'b';
   show(`
   ${topbar(op.name, 'open', id, ln.name, `<button class="iconbtn" data-act="v-flip" aria-label="Flip board">${icon('flip')}</button>`)}
@@ -559,9 +559,11 @@ function lineView(id, li, k = 0, anim = false) {
   <div class="pad">
     <div class="coach" id="note"></div>
     <div id="alts"></div>
-    <div class="actions one">${rec(ln)
-      ? `<button class="btn go" data-act="practice-line" data-id="${id}" data-li="${li}">Practice this line</button>`
-      : `<button class="btn go" data-act="learn" data-id="${id}" data-li="${li}">Learn this line</button>`}</div>
+    <div class="actions one">${resume
+      ? '<button class="btn go" data-act="resume">Back to session</button>'
+      : rec(ln)
+        ? `<button class="btn go" data-act="practice-line" data-id="${id}" data-li="${li}">Practice this line</button>`
+        : `<button class="btn go" data-act="learn" data-id="${id}" data-li="${li}">Learn this line</button>`}</div>
   </div>
   <nav class="dock">
     <button data-act="v-first" aria-label="Go to start">${icon('first')}</button>
@@ -864,7 +866,14 @@ document.addEventListener('click', e => {
     case 'side': sideTab = id; openingsTab(); break;
     case 'open': openingView(id); break;
     case 'line': lineView(id, li); break;
-    case 'study': closeSheet(); R = null; lineView(id, li); break;
+    case 'study': {
+      closeSheet();
+      const inRun = !!(R && R.tasks.length > 1);
+      if (!inRun) R = null;
+      lineView(id, li, 0, false, inRun);
+      break;
+    }
+    case 'resume': if (R) nextTask(); break;
     case 'session': run('session', sessionTasks(), { tab: 'train' }); break;
     case 'learn': run('learn', [{ kind: 'learn', ln: byId[id].lines[li] }], app.classList.contains('has-tabs') ? { tab } : { op: id }); break;
     case 'practice': run('practice', practiceTasks(byId[id]), { op: id }); break;
