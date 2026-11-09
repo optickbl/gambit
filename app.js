@@ -353,18 +353,18 @@ function show(html, tabs = false) {
   if (!RM) { app.classList.remove('enter'); void app.offsetWidth; app.classList.add('enter'); }
   window.scrollTo(0, 0);
 }
-function sheet(html, dismissable = false) {
+function sheet(html, dismissable = false, top = false) {
   closeSheet();
   const el = document.createElement('div');
   el.className = 'sheet-wrap';
-  el.innerHTML = `<div class="scrim"${dismissable ? ' data-act="sheet-close"' : ''}></div><div class="sheet" role="dialog" aria-modal="true">${html}</div>`;
+  el.innerHTML = `<div class="scrim"${dismissable ? ' data-act="sheet-close"' : ''}></div><div class="sheet${top ? ' top' : ''}" role="dialog" aria-modal="true">${html}</div>`;
   document.body.appendChild(el);
   requestAnimationFrame(() => el.classList.add('on'));
 }
 const closeSheet = () => $$('.sheet-wrap').forEach(e => e.remove());
 const topbar = (title, act, id = '', sub = '', right = '') =>
   `<header class="bar"><button class="iconbtn" data-act="${act}" data-id="${id}" aria-label="Back">${icon('back')}</button><div class="bt"><b>${title}</b>${sub ? `<span>${sub}</span>` : ''}</div>${right || '<span class="sp"></span>'}</header>`;
-const bars = l => `<span class="bars${l >= MAX ? ' gold' : ''}" aria-label="Level ${l} of ${MAX}">${Array.from({ length: MAX }, (_, i) => `<i${i < l ? ' class="on"' : ''}></i>`).join('')}</span>`;
+const bars = (l, pop = -1) => `<span class="bars${l >= MAX ? ' gold' : ''}" aria-label="Level ${l} of ${MAX}">${Array.from({ length: MAX }, (_, i) => `<i${i < l ? ` class="on${i === pop ? ' pop' : ''}"` : ''}></i>`).join('')}</span>`;
 function ring(p) {
   const r = 17, c = 2 * Math.PI * r, pct = Math.round(p * 100);
   return `<div class="ring${pct >= 100 ? ' gold' : ''}" aria-label="${pct}% mastered"><svg viewBox="0 0 44 44"><circle cx="22" cy="22" r="${r}" class="rt"/><circle cx="22" cy="22" r="${r}" class="rv" stroke-dasharray="${(c * p).toFixed(1)} ${c.toFixed(1)}"/></svg><span>${pct}<small>%</small></span></div>`;
@@ -512,17 +512,20 @@ function progressTab() {
     <div class="srow"><span>Board</span><div class="seg sm">${[['green', 'Green'], ['brown', 'Wood'], ['blue', 'Slate']].map(([v, l]) => `<button class="${S.theme === v ? 'on' : ''}" data-act="theme" data-id="${v}">${l}</button>`).join('')}</div></div>
     <div class="srow"><span>New lines a day</span><div class="seg sm">${[1, 2, 3, 5].map(v => `<button class="${S.perDay === v ? 'on' : ''}" data-act="perday" data-id="${v}">${v}</button>`).join('')}</div></div>
     <div class="srow link-row" role="button" tabindex="0" data-act="intro"><span>How Gambit works</span>${icon('next', 'chev')}</div>
+    <div class="srow link-row" role="button" tabindex="0" data-act="backup"><span>Back up progress</span>${icon('next', 'chev')}</div>
+    <div class="srow link-row" role="button" tabindex="0" data-act="restore"><span>Restore from a backup</span>${icon('next', 'chev')}</div>
     <div class="srow"><button class="danger" data-act="reset">Reset all progress</button></div>
   </div>
-  <p class="foot">Progress is saved on this phone.</p>`, true);
+  <p class="foot">Progress is saved on this phone. Back it up now and then.</p>`, true);
   $$('[data-mini]').forEach(el => miniBoard(el, byId[el.dataset.mini]));
 }
 
 /* ================= opening page ================= */
 function lineRow(ln) {
-  const st = stage(ln);
+  const st = stage(ln), r = rec(ln);
+  const when = r && st !== 'due' ? `<span class="when">Next review ${fmtDue(r.due)}</span>` : '';
   return `<div class="lrow" role="button" tabindex="0" data-act="line" data-id="${ln.op.id}" data-li="${ln.i}">
-    <div class="lt"><b>${ln.name}</b><span class="nota">${branchText(ln)}</span></div>
+    <div class="lt"><b>${ln.name}</b><span class="nota">${branchText(ln)}</span>${when}</div>
     <div class="lr">${st === 'new' ? '<em class="pill new">New</em>' : st === 'due' ? '<em class="pill due">Review</em>' : st === 'mastered' ? '<em class="pill gold">Mastered</em>' : ''}${bars(level(ln))}</div></div>`;
 }
 function openingView(id) {
@@ -774,7 +777,7 @@ function resultSheet(t, perfect, res) {
       <span class="res-ic">${icon(perfect ? 'check' : 'restart')}</span>
       <h2>${title}</h2>
       <p class="muted">${ln.op.name}, ${ln.name}</p>
-      <div class="lvl">${bars(r.lvl)}<span>Level ${r.lvl} of ${MAX}</span></div>
+      <div class="lvl">${bars(r.lvl, res.after > res.before ? r.lvl - 1 : -1)}<span>Level ${r.lvl} of ${MAX}</span></div>
       <p class="note">${note}</p>
       <div class="actions">
         <button class="btn" data-act="study" data-id="${ln.op.id}" data-li="${ln.i}">Study the line</button>
@@ -894,6 +897,35 @@ document.addEventListener('click', e => {
       save(); closeSheet(); toast('Progress reset'); progressTab();
       break;
     case 'sheet-close': closeSheet(); break;
+    case 'backup': {
+      const code = 'GAMBIT1:' + btoa(unescape(encodeURIComponent(JSON.stringify(S))));
+      sheet(`<div class="res"><h2>Back up progress</h2><p class="note">Copy this code and keep it somewhere safe, like your Notes app. Paste it into Restore on any phone to get your progress back.</p>
+        <textarea class="code" readonly aria-label="Backup code">${code}</textarea>
+        <div class="actions"><button class="btn" data-act="sheet-close">Close</button><button class="btn go" data-act="copy-code">Copy code</button></div></div>`, true);
+      break;
+    }
+    case 'copy-code': {
+      const ta = $('.code');
+      const fallback = () => { ta.focus(); ta.select(); toast('Select the code and copy it'); };
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(ta.value).then(() => toast('Backup code copied'), fallback);
+      else fallback();
+      break;
+    }
+    case 'restore':
+      sheet(`<div class="res"><h2>Restore progress</h2><p class="note">Paste a backup code. It replaces the progress on this phone.</p>
+        <textarea class="code" id="rc" placeholder="GAMBIT1:…" aria-label="Backup code" autocapitalize="off" autocomplete="off" spellcheck="false"></textarea>
+        <div class="actions"><button class="btn" data-act="sheet-close">Cancel</button><button class="btn go" data-act="restore-yes">Restore</button></div></div>`, true, true);
+      break;
+    case 'restore-yes':
+      try {
+        const raw = $('#rc').value.trim();
+        if (!raw.startsWith('GAMBIT1:')) throw new Error();
+        const data = JSON.parse(decodeURIComponent(escape(atob(raw.slice(8)))));
+        if (!data || typeof data.lines !== 'object') throw new Error();
+        Object.assign(S, { lines: {}, weak: {}, log: {}, xp: 0 }, data);
+        save(); applyTheme(); closeSheet(); toast('Progress restored'); progressTab();
+      } catch { toast('That code is not a valid backup'); }
+      break;
     case 'intro': intro(); break;
     case 'intro-ok': S.intro = 1; save(); closeSheet(); break;
   }
