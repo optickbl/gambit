@@ -2,6 +2,9 @@
 import { Chess } from './chess.js';
 import { OPENINGS } from './openings.js';
 import { NOTES } from './notes.js';
+import { PUZZLES } from './puzzles.js';
+import { ENDGAMES } from './endgames.js';
+import { Engine, winning, losing, flip } from './engine.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -86,7 +89,8 @@ const shuffle = a => { for (let i = a.length - 1; i > 0; i--) { const j = Math.f
 
 /* ================= saved progress ================= */
 const KEY = 'gambit.v2';
-const S = { lines: {}, weak: {}, log: {}, xp: 0, sound: true, theme: 'green', perDay: 2 };
+const FRESH = () => ({ lines: {}, weak: {}, log: {}, xp: 0, pz: {}, prating: 1000, pn: 0, eg: {}, games: { w: 0, l: 0, d: 0 } });
+const S = { ...FRESH(), sound: true, theme: 'green', perDay: 2, bot: 1 };
 try {
   const saved = localStorage.getItem(KEY);
   if (saved) Object.assign(S, JSON.parse(saved));
@@ -215,7 +219,12 @@ const ICONS = {
   award: '<circle cx="12" cy="8" r="6.5"/><path d="M8.2 13.6L7 22l5-3 5 3-1.2-8.4"/>',
   shuffle: '<path d="M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/>',
   alert: '<path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/>',
-  layers: '<path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5M2 12l10 5 10-5"/>'
+  layers: '<path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5M2 12l10 5 10-5"/>',
+  swords: '<path d="M14.5 17.5L3 6V3h3l11.5 11.5M13 19l6-6M16 16l4 4M19 21l2-2M9.5 6.5L13 3h3v3l-3.5 3.5M5 14l4 4M7 17l-3 3M3 19l2 2"/>',
+  crown: '<path d="M3 7l4.5 4L12 4l4.5 7L21 7l-2 11H5L3 7z"/><path d="M5 21h14"/>',
+  undo: '<path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/>',
+  flag: '<path d="M4 22V4M4 4h13l-2 4.5L17 13H4"/>',
+  play: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>'
 };
 const icon = (n, cls = '') => `<svg class="ic ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n]}</svg>`;
 
@@ -348,6 +357,7 @@ function toast(t) { const e = $('#toast'); e.textContent = t; e.classList.add('o
 function show(html, tabs = false) {
   stopTimers();
   closeSheet();
+  if (ENG) ENG.stop();
   app.innerHTML = html + (tabs ? tabBar() : '');
   app.className = tabs ? 'has-tabs' : html.includes('class="dock') ? 'has-dock' : '';
   if (!RM) { app.classList.remove('enter'); void app.offsetWidth; app.classList.add('enter'); }
@@ -374,11 +384,11 @@ function coach(kind, title, text = '', extra = '') {
   el.className = 'coach ' + kind;
   el.innerHTML = `<div class="ava"><i class="pc wN"></i></div><div class="ct"><b>${title}</b>${text ? `<p>${text}</p>` : ''}${extra}</div>`;
 }
-function strip(el, moves, k, act) {
+function strip(el, moves, k, act, from = 0) {
   if (!el) return;
   el.innerHTML = moves.length
-    ? moves.map((s, i) => `${i & 1 ? '' : `<span class="no">${(i >> 1) + 1}.</span>`}<button class="mv${i === k - 1 ? ' cur' : ''}${i >= k ? ' fut' : ''}"${act ? ` data-act="${act}" data-k="${i + 1}"` : ' tabindex="-1"'}>${s}</button>`).join('')
-    : '<span class="no">Starting position</span>';
+    ? moves.map((s, i) => { const ply = i + from; return `${ply & 1 ? (i ? '' : `<span class="no">${(ply + 1) >> 1}...</span>`) : `<span class="no">${(ply >> 1) + 1}.</span>`}<button class="mv${i === k - 1 ? ' cur' : ''}${i >= k ? ' fut' : ''}"${act ? ` data-act="${act}" data-k="${i + 1}"` : ' tabindex="-1"'}>${s}</button>`; }).join('')
+    : `<span class="no">${from ? 'No moves yet' : 'Starting position'}</span>`;
   const cur = el.querySelector('.cur');
   el.scrollLeft = cur ? cur.offsetLeft - el.clientWidth / 2 + cur.offsetWidth / 2 : 0;
 }
@@ -387,9 +397,9 @@ function applyTheme() { document.documentElement.dataset.theme = S.theme; }
 
 /* ================= tabs ================= */
 let tab = 'train', sideTab = 'w';
-const TABS = [['train', 'target', 'Train'], ['openings', 'book', 'Openings'], ['progress', 'chart', 'Progress']];
+const TABS = [['train', 'target', 'Train'], ['openings', 'book', 'Openings'], ['tactics', 'swords', 'Tactics'], ['endgames', 'crown', 'Endgames'], ['progress', 'chart', 'Progress']];
 const tabBar = () => `<nav class="tabs">${TABS.map(([id, ic, label]) => `<button class="tab${tab === id ? ' on' : ''}" data-act="tab" data-id="${id}"${tab === id ? ' aria-current="page"' : ''}>${icon(ic)}<span>${label}</span></button>`).join('')}</nav>`;
-function openTab(id) { tab = id; ({ train: trainTab, openings: openingsTab, progress: progressTab })[id](); }
+function openTab(id) { tab = id; ({ train: trainTab, openings: openingsTab, tactics: tacticsTab, endgames: endgamesTab, progress: progressTab })[id](); }
 
 function row(ic, title, sub, act, id = '') {
   const off = !act;
@@ -434,6 +444,8 @@ function trainTab() {
   <div class="group">
     ${row('shuffle', 'Quick test', c.learned ? '10 positions from lines you have learned' : 'Unlocks after your first line', c.learned ? 'test' : '')}
     ${row('alert', 'Weak moves', weak ? `${plural(weak, 'move')} you keep missing` : 'Moves you miss show up here', weak ? 'weak' : '')}
+    ${row('swords', 'Puzzles', `${pzDue().length ? `${plural(pzDue().length, 'puzzle')} to retry, ` : ''}tactics rating ${S.prating}`, 'pz-mix')}
+    ${row('play', 'Play the computer', S.games.w + S.games.l + S.games.d ? `${S.games.w} won, ${S.games.l} lost, ${S.games.d} drawn` : 'Use your openings in a real game', 'play')}
     ${row('layers', 'All openings', `${c.learned} of ${ALL.length} lines learned, ${c.mastered} mastered`, 'tab', 'openings')}
   </div>`, true);
   miniHero($('#hb'), heroLn);
@@ -501,6 +513,11 @@ function progressTab() {
     <div><b>${acc == null ? '–' : acc + '%'}</b><span>Accuracy, 7 days</span></div>
     <div><b>${S.xp}</b><span>XP</span></div>
   </section>
+  <section class="trio">
+    <div><b>${S.prating}</b><span>Tactics rating</span></div>
+    <div><b>${PRACTICE.filter(solved).length}</b><span>Puzzles solved</span></div>
+    <div><b>${ENDGAMES.reduce((s, l) => s + egCount(l), 0)}/${ENDGAMES.reduce((s, l) => s + l.fens.length, 0)}</b><span>Endgames done</span></div>
+  </section>
   <h2 class="h2">Training days</h2>
   <section class="panel">${cal}</section>
   ${weak ? `<div class="group mt">${row('alert', 'Weak moves', `${plural(weak, 'move')} to fix`, 'weak')}</div>` : ''}
@@ -559,11 +576,11 @@ function lineView(id, li, k = 0, anim = false, resume = false) {
   <div class="pad">
     <div class="coach" id="note"></div>
     <div id="alts"></div>
-    <div class="actions one">${resume
+    <div class="actions">${resume
       ? '<button class="btn go" data-act="resume">Back to session</button>'
-      : rec(ln)
-        ? `<button class="btn go" data-act="practice-line" data-id="${id}" data-li="${li}">Practice this line</button>`
-        : `<button class="btn go" data-act="learn" data-id="${id}" data-li="${li}">Learn this line</button>`}</div>
+      : `<button class="btn" data-act="play-here">Play from here</button>${rec(ln)
+        ? `<button class="btn go" data-act="practice-line" data-id="${id}" data-li="${li}">Practice line</button>`
+        : `<button class="btn go" data-act="learn" data-id="${id}" data-li="${li}">Learn line</button>`}`}</div>
   </div>
   <nav class="dock">
     <button data-act="v-first" aria-label="Go to start">${icon('first')}</button>
@@ -855,6 +872,524 @@ function testTasks(n = 10) {
 }
 const weakTasks = () => shuffle(weakList()).slice(0, 15).map(w => ({ kind: 'pos', ln: w.ln, k: w.k }));
 
+/* ================= tactics ================= */
+const THEMES = [
+  { key: 'hanging', name: 'Free pieces', about: 'The simplest tactic of all: take what is not defended, or defended fewer times than you attack it.', tip: 'After every move, ask what it left unprotected.' },
+  { key: 'fork', name: 'Forks', about: 'One piece attacks two targets at once. Your opponent can only save one of them.', tip: 'Knights fork best. Look for a square that hits the king and a big piece together.' },
+  { key: 'pin', name: 'Pins', about: 'A pinned piece cannot move without exposing something more valuable behind it, usually the king or queen.', tip: 'Attack a pinned piece again. It cannot run away.' },
+  { key: 'skewer', name: 'Skewers', about: 'A pin in reverse: attack a valuable piece, it moves away, and you take the piece behind it.', tip: 'Look for a king or queen on the same line as another piece.' },
+  { key: 'discovered', name: 'Discovered attacks', about: 'Move one piece out of the way and the piece behind it attacks. Two threats in one move.', tip: 'If your piece blocks your own queen, rook or bishop, ask what it could attack as it moves away.' },
+  { key: 'doubleCheck', name: 'Double check', about: 'Two pieces give check at once. Blocking or capturing cannot stop both, so the king has to move.', tip: 'The checking piece can even land on a square where it could be taken.' },
+  { key: 'removeDefender', name: 'Remove the defender', about: 'Capture or chase away the piece that guards something, then take what it was guarding.', tip: 'Ask what defends a target, and whether you can take that defender first.' },
+  { key: 'deflection', name: 'Deflection', about: 'Force a defender away from its job with a check, a capture or a threat.', tip: 'A piece doing two jobs at once is the perfect target.' },
+  { key: 'decoy', name: 'Decoy', about: 'Lure a piece, often the king, onto a bad square, usually with a sacrifice, then strike.', tip: 'Sacrifices that drag the king forward often end in mate or a fork.' },
+  { key: 'trapped', name: 'Trapped pieces', about: 'A piece with no safe squares can be attacked and won.', tip: 'Pieces deep in enemy territory, especially bishops and knights, get trapped the most.' },
+  { key: 'intermezzo', name: 'In-between moves', about: 'Before recapturing, play a stronger move first, usually a check or a bigger threat.', tip: 'Never recapture on autopilot. Look for checks and threats first.' },
+  { key: 'f7', name: 'Attacking f7 and f2', about: 'Early in the game, f7 (or f2) is guarded only by the king, which makes it the classic target.', tip: 'With a bishop on c4 and your queen or knight nearby, always look at f7.' },
+  { key: 'backRank', name: 'Back-rank mate', about: 'A king stuck behind its own pawns can be mated by a rook or queen on the back rank.', tip: 'Notice when the enemy king has no escape square, and give your own king one in time.' },
+  { key: 'mate1', name: 'Mate in one', about: 'One move ends the game.', tip: 'Look at every check and count the king’s escape squares.' },
+  { key: 'mate2', name: 'Mate in two', about: 'A forcing first move, usually a check or a sacrifice, sets up mate on the next move.', tip: 'Try checks first, then captures, then threats.' },
+  { key: 'promotion', name: 'Promotion', about: 'Push a pawn to the last rank and make a new queen. Sometimes a sacrifice clears the way.', tip: 'A passed pawn close to promotion is worth almost anything.' }
+];
+const THEME = Object.fromEntries(THEMES.map(t => [t.key, t]));
+const PZ = PUZZLES.map(([id, fen, sol, rating, theme]) => ({ id, fen, sol: sol.split(' '), rating, theme }));
+const EXAMPLE = {}; // the easiest puzzle of each theme is its worked example
+for (const p of PZ) if (!EXAMPLE[p.theme]) EXAMPLE[p.theme] = p;
+const PRACTICE = PZ.filter(p => EXAMPLE[p.theme] !== p);
+const pzOf = key => PRACTICE.filter(p => p.theme === key);
+const prec = p => S.pz[p.id];
+const solved = p => !!(prec(p) && prec(p).done);
+const pzDue = () => PRACTICE.filter(p => { const r = prec(p); return r && !r.done && r.due <= Date.now(); });
+function pzResult(p, ok) {
+  const r = S.pz[p.id], now = Date.now();
+  if (!r) { // only the first try moves the rating
+    const exp = 1 / (1 + 10 ** ((p.rating - S.prating) / 400)), K = S.pn < 20 ? 40 : 20;
+    const delta = Math.round(K * ((ok ? 1 : 0) - exp));
+    S.prating = Math.max(400, S.prating + delta);
+    S.pn++;
+    S.pz[p.id] = ok ? { done: 1 } : { s: 0, due: now + DAY };
+    return delta;
+  }
+  if (r.done) return 0;
+  if (ok) { r.s++; if (r.s >= 3) S.pz[p.id] = { done: 1 }; else r.due = now + (r.s === 1 ? 3 : 7) * DAY; }
+  else { r.s = 0; r.due = now + DAY; }
+  return 0;
+}
+function pzSession() {
+  const due = shuffle(pzDue()).slice(0, 4), unseen = PRACTICE.filter(p => !prec(p));
+  const near = unseen.filter(p => Math.abs(p.rating - S.prating) <= 200);
+  const pool = shuffle(near.length >= 12 ? near : unseen.slice().sort((a, b) => Math.abs(a.rating - S.prating) - Math.abs(b.rating - S.prating)).slice(0, 40));
+  const pick = [], seen = new Set();
+  for (const p of pool) if (pick.length + due.length < 10 && !seen.has(p.theme)) { pick.push(p); seen.add(p.theme); }
+  for (const p of pool) if (pick.length + due.length < 10 && !pick.includes(p)) pick.push(p);
+  return shuffle([...due, ...pick]);
+}
+function themeList(key) {
+  const ps = pzOf(key), todo = ps.filter(p => !solved(p));
+  return (todo.length ? todo : ps).slice(0, 10);
+}
+function tacticsTab() {
+  const due = pzDue().length, done = PRACTICE.filter(solved).length;
+  show(`
+  <header class="top"><h1 class="display">Tactics</h1></header>
+  <section class="today tac">
+    <div class="rating"><b>${S.prating}</b><span>Tactics rating</span></div>
+    <p>${S.pn ? `${done} of ${PRACTICE.length} puzzles solved.${due ? ` ${plural(due, 'puzzle')} to retry today.` : ''}` : 'Real positions from real games. Every first try moves your rating up or down.'}</p>
+    <button class="btn go big" data-act="pz-mix">Start puzzles</button>
+  </section>
+  <h2 class="h2">Learn by theme</h2>
+  <div class="group">${THEMES.map(t => { const ps = pzOf(t.key), n = ps.filter(solved).length; return `<div class="orow" role="button" tabindex="0" data-act="tactic" data-id="${t.key}"><div class="ot"><b>${t.name}</b><span class="sub">${n} of ${ps.length} solved</span></div>${ring(n / ps.length)}</div>`; }).join('')}</div>
+  <p class="foot">Puzzles come from the Lichess puzzle database.</p>`, true);
+}
+let TV = null;
+function themeView(key) {
+  const t = THEME[key], ps = pzOf(key), n = ps.filter(solved).length, ex = EXAMPLE[key], g = new Chess(ex.fen);
+  show(`
+  ${topbar(t.name, 'tab', 'tactics', `${n} of ${ps.length} solved`)}
+  <div class="stage"><div id="bd"></div></div>
+  <div class="pad">
+    <div class="coach" id="note"></div>
+    <p class="lead">${t.about}</p>
+    <ul class="ideas"><li>${t.tip}</li></ul>
+    <div class="actions"><button class="btn" data-act="theme-demo">See the example</button><button class="btn go" data-act="theme-go" data-id="${key}">${n >= ps.length ? 'Practise again' : n ? 'Continue' : 'Solve puzzles'}</button></div>
+  </div>`);
+  TV = { key, board: new Board($('#bd')) };
+  TV.board.set(g, { flip: g.turn() === 'b' });
+  coach('info', `Example: ${g.turn() === 'w' ? 'White' : 'Black'} to move`, 'Try to spot it, then tap See the example to watch the solution.');
+}
+function themeDemo() {
+  if (!TV) return;
+  stopTimers();
+  const ex = EXAMPLE[TV.key], g = new Chess(ex.fen), b = TV.board;
+  b.set(g, { flip: g.turn() === 'b' });
+  let t = 300;
+  ex.sol.forEach((san, i) => {
+    later(() => {
+      const m = g.moves({ verbose: true }).find(x => x.san === san);
+      b.arrow = { from: m.from, to: m.to }; b.render();
+      coach(i & 1 ? 'them' : 'hint', `${i & 1 ? 'Reply' : 'Play'} ${san}`, '');
+    }, t);
+    later(() => { const m = g.move(san); b.set(g, { last: m }); b.animate(m.from, m.to); sfx.move(m); }, t + 900);
+    t += 1700;
+  });
+  later(() => coach('good', 'That is the idea', 'Now find it yourself in the puzzles.'), t);
+}
+
+let P = null;
+function puzzleRun(list, title, back, mixed = false) {
+  if (!list.length) return toast('No puzzles to do here right now');
+  P = { list, i: -1, title, back, mixed, ok: 0, n: 0, delta: 0 };
+  nextPuzzle();
+}
+function nextPuzzle() {
+  P.i++;
+  if (P.i >= P.list.length) return puzzleSummary();
+  const p = (P.p = P.list[P.i]);
+  Object.assign(P, { g: new Chess(p.fen), k: 0, fail: false, done: false, hint: 0 });
+  const side = P.g.turn();
+  show(`
+  ${topbar(P.title, 'pz-quit', '', `Puzzle ${P.i + 1} of ${P.list.length}, rated ${p.rating}`)}
+  <div class="prog"><i id="pg" style="width:${((P.i / P.list.length) * 100).toFixed(1)}%"></i></div>
+  <div class="stage"><div id="bd"></div></div>
+  <div class="pad"><div class="coach" id="note"></div></div>
+  <nav class="dock"><button data-act="pz-hint">${icon('bulb')}<span>Hint</span></button><button data-act="pz-show">${icon('eye')}<span>Show move</span></button></nav>`);
+  P.board = new Board($('#bd'), { onMove: puzzleMove });
+  P.board.side = side;
+  P.board.set(P.g, { flip: side === 'b' });
+  P.board.interactive = true;
+  coach('you', `${side === 'w' ? 'White' : 'Black'} to move`, P.mixed ? 'Find the best move.' : THEME[p.theme].tip);
+}
+const pzMoveObj = () => P.g.moves({ verbose: true }).find(x => x.san === P.p.sol[P.k]);
+function puzzleMove(from, to, anim) {
+  if (!P || P.done || !P.board.interactive) return;
+  const p = P.p, m = findMove(P.g, from, to);
+  if (!m) { P.board.render(); return; }
+  const want = p.sol[P.k], last = P.k === p.sol.length - 1;
+  let ok = m.san === want;
+  if (!ok && last && want.endsWith('#')) { const g2 = new Chess(P.g.fen()); g2.move(m.san); ok = g2.isCheckmate(); }
+  if (!ok) {
+    P.fail = true;
+    sfx.bad(); P.board.render(); P.board.flash(to, 'bad'); P.board.shake();
+    coach('bad', 'Not the move', 'Try again, or tap Show move.');
+    return;
+  }
+  P.g.move(m.san);
+  P.k++;
+  P.board.set(P.g, { last: m });
+  if (anim) P.board.animate(m.from, m.to);
+  P.board.flash(m.to, 'good', 380);
+  sfx.move(m);
+  if (P.k >= p.sol.length) return puzzleDone();
+  P.board.interactive = false;
+  coach('good', 'Good move', 'Keep going.');
+  later(() => {
+    if (!P || P.p !== p) return;
+    const r = P.g.move(p.sol[P.k]);
+    P.k++;
+    P.board.set(P.g, { last: r });
+    P.board.animate(r.from, r.to);
+    sfx.move(r);
+    P.hint = 0;
+    P.board.interactive = true;
+    coach('you', 'Your move', 'Find the follow-up.');
+  }, 600);
+}
+function pzHint() {
+  if (!P || P.done || !P.board.interactive) return;
+  P.fail = true;
+  if (P.hint) return pzShow();
+  P.hint = 1;
+  P.board.hintSq = pzMoveObj().from;
+  P.board.render();
+  coach('hint', 'Move this piece', 'Tap Hint again to see the square.');
+}
+function pzShow() {
+  if (!P || P.done || !P.board.interactive) return;
+  P.fail = true;
+  const m = pzMoveObj();
+  P.board.hintSq = null;
+  P.board.arrow = { from: m.from, to: m.to };
+  P.board.render();
+  coach('hint', `Play ${m.san}`, '');
+}
+function puzzleDone() {
+  const p = P.p, ok = !P.fail, th = THEME[p.theme];
+  P.done = true;
+  P.board.interactive = false;
+  const delta = pzResult(p, ok);
+  P.n++; if (ok) P.ok++;
+  P.delta += delta;
+  today().n++;
+  if (ok) addXP(5);
+  save();
+  if (ok) sfx.good();
+  const el = $('#pg'); if (el) el.style.width = (((P.i + 1) / P.list.length) * 100).toFixed(1) + '%';
+  coach(ok ? 'good' : 'info', ok ? 'Solved' : 'Now you know it', `<b class="th">${th.name}.</b> ${th.about}`,
+    `${delta ? `<p class="delta ${delta > 0 ? 'up' : 'down'}">Rating ${delta > 0 ? '+' : '−'}${Math.abs(delta)}, now ${S.prating}</p>` : ok ? '' : '<p class="delta">It comes back tomorrow so you can solve it properly.</p>'}<button class="btn go sm" data-act="pz-next">${P.i < P.list.length - 1 ? 'Next puzzle' : 'See results'}</button>`);
+}
+function puzzleSummary() {
+  const d = P.delta;
+  show(`
+  ${topbar(P.title, 'pz-quit')}
+  <section class="sum">
+    <span class="sum-ic">${icon('award')}</span>
+    <h1 class="display">${P.ok} of ${P.n} solved</h1>
+    <p class="lead">${d > 0 ? `Your rating went up ${d} points.` : d < 0 ? `Your rating went down ${-d} points. The ones you missed come back tomorrow.` : 'Missed puzzles come back until you solve them.'}</p>
+    <div class="trio"><div><b>${S.prating}</b><span>Tactics rating</span></div><div><b>${P.n ? Math.round((100 * P.ok) / P.n) : 0}%</b><span>Solved</span></div><div><b>${streak()}</b><span>Day streak</span></div></div>
+    <div class="actions"><button class="btn go" data-act="pz-more">More puzzles</button><button class="btn" data-act="pz-quit">Done</button></div>
+  </section>`);
+}
+function pzBack() {
+  const b = P && P.back;
+  P = null;
+  if (b && b.theme) return themeView(b.theme);
+  openTab(b && b.tab ? b.tab : 'tactics');
+}
+
+/* ================= endgames ================= */
+let ENG = null, E = null;
+const engine = () => ENG || (ENG = new Engine());
+const EGL = Object.fromEntries(ENDGAMES.map(l => [l.id, l]));
+const GOAL = { mate: 'Checkmate the king', promote: 'Promote your pawn', win: 'Win the position', draw: 'Hold the draw' };
+const goalLine = l => (l.goal === 'draw' ? `Hold the draw for ${l.target} moves` : GOAL[l.goal]);
+const egDone = (l, i) => !!(S.eg[l.id] && S.eg[l.id][i]);
+const egCount = l => l.fens.filter((_, i) => egDone(l, i)).length;
+const uciMove = (g, u) => g.move({ from: u.slice(0, 2), to: u.slice(2, 4), promotion: u[4] || 'q' });
+const eAlive = me => E === me && me.board.el.isConnected;
+const startPly = fen => { const f = fen.split(' '); return (+f[5] - 1) * 2 + (f[1] === 'b' ? 1 : 0); };
+function onlyKing(g, color) { for (const row of g.board()) for (const p of row) if (p && p.color === color && p.type !== 'k') return false; return true; }
+
+function endgamesTab() {
+  const groups = [...new Set(ENDGAMES.map(l => l.group))];
+  show(`
+  <header class="top"><h1 class="display">Endgames</h1></header>
+  <p class="hint-text">The endings every player must know. You play each one against the computer, and it tells you the moment a move throws the result away.</p>
+  ${groups.map(name => `<h2 class="h2">${name}</h2><div class="group">${ENDGAMES.filter(l => l.group === name).map(l => { const n = egCount(l); return `<div class="orow" role="button" tabindex="0" data-act="eg" data-id="${l.id}"><div class="mb" data-egmini="${l.id}"></div><div class="ot"><b>${l.name}</b><span class="sub">${goalLine(l)}</span><span class="sub">${n} of ${l.fens.length} positions done</span></div>${ring(n / l.fens.length)}</div>`; }).join('')}</div>`).join('')}`, true);
+  $$('[data-egmini]').forEach(el => { const l = EGL[el.dataset.egmini]; new Board(el, { mini: true }).set(new Chess(l.fens[0]), { flip: l.side === 'b' }); });
+}
+function egView(id) {
+  const l = EGL[id], next = l.fens.findIndex((_, i) => !egDone(l, i));
+  show(`
+  ${topbar(l.name, 'tab', 'endgames', `${egCount(l)} of ${l.fens.length} positions done`)}
+  <div class="stage"><div id="bd"></div></div>
+  <div class="pad">
+    <p class="lead">${l.about}</p>
+    <h3 class="h3">The method</h3>
+    <ul class="ideas">${l.steps.map(s => `<li>${s}</li>`).join('')}</ul>
+    <h3 class="h3">Positions</h3>
+    <div class="group flush">${l.fens.map((f, i) => `<div class="brow" role="button" tabindex="0" data-act="eg-play" data-id="${id}" data-li="${i}"><span class="nota">Position ${i + 1}</span><span class="bn">${egDone(l, i) ? `Done in ${plural(S.eg[id][i], 'move')}` : 'Not done yet'}</span>${egDone(l, i) ? icon('check', 'okic') : icon('next', 'chev')}</div>`).join('')}</div>
+    <div class="actions"><button class="btn" data-act="eg-watch" data-id="${id}" data-li="${Math.max(0, next)}">Watch the computer</button><button class="btn go" data-act="eg-play" data-id="${id}" data-li="${Math.max(0, next)}">${next < 0 ? 'Practise again' : 'Practise'}</button></div>
+  </div>`);
+  new Board($('#bd')).set(new Chess(l.fens[0]), { flip: l.side === 'b' });
+}
+function egStart(id, idx, watch = false) {
+  const l = EGL[id];
+  E = { l, idx, watch, g: new Chess(l.fens[idx]), hist: [], moves: 0, busy: true, best: null, par: null, over: false, failed: false, hint: 0 };
+  const me = E;
+  show(`
+  ${topbar(l.name, 'eg-quit', id, watch ? `Watch: position ${idx + 1}` : `Position ${idx + 1} of ${l.fens.length}`)}
+  <div class="stage"><div id="bd"></div></div>
+  <div class="strip" id="mv"></div>
+  <div class="pad"><div class="coach" id="note"></div></div>
+  <nav class="dock">${watch
+    ? `<button data-act="eg-play" data-id="${id}" data-li="${idx}">${icon('target')}<span>Practise this</span></button>`
+    : `<button data-act="eg-hint">${icon('bulb')}<span>Hint</span></button><button data-act="eg-undo">${icon('undo')}<span>Take back</span></button><button data-act="eg-restart">${icon('restart')}<span>Restart</span></button>`}</nav>`);
+  me.board = new Board($('#bd'), { onMove: egMove });
+  me.board.side = l.side;
+  me.board.set(me.g, { flip: l.side === 'b' });
+  egStrip();
+  coach('info', watch ? 'Watch the technique' : goalLine(l), 'The computer is looking at the position…');
+  engine().search(me.g.fen(), { movetime: 900 }).then(r => {
+    if (!eAlive(me)) return;
+    me.best = r.best;
+    me.par = r.score;
+    if (watch) return egWatchStep(me);
+    me.busy = false;
+    me.board.interactive = true;
+    let txt = 'The computer defends perfectly. Find the winning plan.';
+    if (l.goal === 'mate' && r.score && r.score.mate > 0) txt = `Perfect play mates in ${r.score.mate}. Use the method and you will get there.`;
+    if (l.goal === 'draw') txt = 'The computer will try everything to win. Find the defensive moves.';
+    coach('you', goalLine(l), txt);
+  });
+}
+function egStrip() { const h = E.g.history(); strip($('#mv'), h, h.length, null, startPly(E.l.fens[E.idx])); }
+// returns true if the game ended on the last move
+function egFinished() {
+  const me = E, g = me.g, l = me.l, userMoved = g.turn() !== l.side;
+  if (g.isCheckmate()) { if (userMoved) egWin(); else egLose('Checkmate', 'Your king was mated.'); return true; }
+  if (g.isDraw()) {
+    if (l.goal === 'draw') egWin();
+    else if (g.isStalemate()) egLose('Stalemate', 'The king has no legal move but is not in check, so the game is a draw. Always leave it a square.');
+    else egLose('Draw', 'The position became a draw.');
+    return true;
+  }
+  if (l.goal === 'win' && userMoved && onlyKing(g, l.side === 'w' ? 'b' : 'w')) { egWin(); return true; }
+  return false;
+}
+function egMove(from, to, anim) {
+  const me = E;
+  if (!me || me.watch || me.busy || me.over || !me.board.interactive) return;
+  const m = findMove(me.g, from, to);
+  if (!m) { me.board.render(); return; }
+  me.hist.push(me.g.fen());
+  me.g.move(m.san);
+  me.moves++;
+  me.hint = 0;
+  me.board.set(me.g, { last: m });
+  if (anim) me.board.animate(m.from, m.to);
+  sfx.move(m);
+  egStrip();
+  if (egFinished()) return;
+  me.busy = true;
+  me.board.interactive = false;
+  coach('them', 'The computer is thinking…');
+  engine().search(me.g.fen(), { movetime: me.l.goal === 'draw' ? 1000 : 700 }).then(r => {
+    if (!eAlive(me)) return;
+    if (!r.best) { me.busy = false; me.failed = true; coach('bad', 'The computer stopped', 'Tap Take back to try again.'); return; }
+    const l = me.l, mine = flip(r.score), cp = l.cp || 300;
+    if (l.goal === 'draw' ? losing(mine, cp) : !winning(mine, cp)) {
+      me.busy = false;
+      me.failed = true;
+      coach('bad', l.goal === 'draw' ? 'That move loses' : 'That lets the win slip', 'Take it back and look for a better move. Hint shows the best one.', '<button class="btn go sm" data-act="eg-undo">Take back</button>');
+      return;
+    }
+    if ((l.goal === 'promote' || l.goal === 'win') && m.promotion) return egWin();
+    const rm = uciMove(me.g, r.best);
+    me.board.set(me.g, { last: rm });
+    me.board.animate(rm.from, rm.to);
+    sfx.move(rm);
+    me.best = r.pv[1] || null;
+    egStrip();
+    if (egFinished()) return;
+    if (l.goal === 'draw' && me.moves >= l.target) return egWin();
+    me.busy = false;
+    me.board.interactive = true;
+    coach('you', 'Your move', l.goal === 'draw' ? `Moves held: ${me.moves} of ${l.target}.` : l.goal === 'mate' ? `Moves so far: ${me.moves}.` : '');
+  });
+}
+function egHint() {
+  const me = E;
+  if (!me || me.watch || me.busy || me.over || me.failed) return;
+  const reveal = best => {
+    if (!best || !eAlive(me)) return;
+    if (!me.hint) { me.hint = 1; me.board.hintSq = best.slice(0, 2); me.board.render(); coach('hint', 'Move this piece', 'Tap Hint again to see the square.'); }
+    else { me.board.hintSq = null; me.board.arrow = { from: best.slice(0, 2), to: best.slice(2, 4) }; me.board.render(); coach('hint', 'Try this move', ''); }
+  };
+  if (me.best) return reveal(me.best);
+  me.busy = true;
+  coach('them', 'Looking for the best move…');
+  engine().search(me.g.fen(), { movetime: 800 }).then(r => { if (!eAlive(me)) return; me.busy = false; me.best = r.best; reveal(r.best); });
+}
+function egUndo() {
+  const me = E;
+  if (!me || me.watch || !me.hist.length || (me.busy && !me.failed)) return;
+  closeSheet();
+  me.g = new Chess(me.hist.pop());
+  me.moves = Math.max(0, me.moves - 1);
+  Object.assign(me, { over: false, busy: false, failed: false, best: null, hint: 0 });
+  me.board.set(me.g, {});
+  me.board.interactive = true;
+  egStrip();
+  coach('you', 'Your move', 'Try a different idea.');
+}
+function egWin() {
+  const me = E, l = me.l;
+  me.over = true; me.busy = false; me.board.interactive = false;
+  if (me.watch) { coach('good', 'That is the technique', 'Now try it yourself.'); return; }
+  S.eg[l.id] = S.eg[l.id] || {};
+  const prev = S.eg[l.id][me.idx];
+  if (!prev || me.moves < prev) S.eg[l.id][me.idx] = me.moves;
+  today().n++;
+  addXP(15);
+  save();
+  later(sfx.done, 100);
+  const par = l.goal === 'mate' && me.par && me.par.mate > 0 ? ` Perfect play needs ${me.par.mate}.` : '';
+  const msg = l.goal === 'mate' ? `Checkmate in ${plural(me.moves, 'move')}.${par}` : l.goal === 'draw' ? `You held the draw for ${plural(me.moves, 'move')}.` : `Won in ${plural(me.moves, 'move')}.`;
+  coach('good', 'Well done', msg);
+  const next = me.idx + 1 < l.fens.length ? me.idx + 1 : -1;
+  later(() => sheet(`<div class="res ok"><span class="res-ic">${icon('check')}</span><h2>${l.goal === 'mate' ? 'Checkmate' : l.goal === 'draw' ? 'Draw held' : 'Position won'}</h2><p class="muted">${l.name}, position ${me.idx + 1}</p><p class="note">${msg}</p>
+    <div class="actions"><button class="btn" data-act="eg-play" data-id="${l.id}" data-li="${me.idx}">Play it again</button>${next >= 0 ? `<button class="btn go" data-act="eg-play" data-id="${l.id}" data-li="${next}">Next position</button>` : `<button class="btn go" data-act="eg-quit" data-id="${l.id}">Done</button>`}</div></div>`), 700);
+}
+function egLose(title, text) {
+  const me = E;
+  me.over = true; me.busy = false; me.failed = true; me.board.interactive = false;
+  coach('bad', title, text, me.watch ? '' : '<button class="btn go sm" data-act="eg-undo">Take back</button>');
+}
+function egWatchStep(me) {
+  if (!eAlive(me) || me.over) return;
+  if (me.moves >= 40) return coach('info', 'Paused', 'Tap Practise this to try it yourself.');
+  engine().search(me.g.fen(), { movetime: 600 }).then(r => {
+    if (!eAlive(me) || !r.best) return;
+    const m = uciMove(me.g, r.best);
+    me.board.set(me.g, { last: m });
+    me.board.animate(m.from, m.to);
+    sfx.move(m);
+    egStrip();
+    if (m.color === me.l.side) me.moves++;
+    if (egFinished()) return;
+    const l = me.l;
+    if (m.color === l.side && (((l.goal === 'promote' || l.goal === 'win') && m.promotion) || (l.goal === 'draw' && me.moves >= l.target))) return egWin();
+    coach('info', 'Watch the technique', l.steps[Math.min(l.steps.length - 1, Math.floor(me.moves / 3))]);
+    later(() => egWatchStep(me), 500);
+  });
+}
+
+/* ================= play the computer ================= */
+const START = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+const BOTS = [['Beginner', 0, 1], ['Casual', 3, 3], ['Club', 8, 6], ['Strong', 15, 0]]; // name, skill level, depth (0 = timed)
+let G = null, pend = null;
+const gAlive = me => G === me && me.board.el.isConnected;
+function playSheet(fen, side, back) {
+  pend = { fen, side, back };
+  const fresh = fen === START;
+  sheet(`<div class="res"><h2>Play the computer</h2>
+    <p class="note">${fresh ? 'Pick a level and a colour.' : 'Play on from this position with the side you were learning.'}</p>
+    <div class="seg sm wide">${BOTS.map(([n], i) => `<button class="${S.bot === i ? 'on' : ''}" data-act="bot" data-id="${i}">${n}</button>`).join('')}</div>
+    ${fresh ? `<div class="seg sm wide">${[['w', 'White'], ['b', 'Black']].map(([v, n]) => `<button class="${side === v ? 'on' : ''}" data-act="bot-side" data-id="${v}">${n}</button>`).join('')}</div>` : ''}
+    <div class="actions"><button class="btn" data-act="sheet-close">Cancel</button><button class="btn go" data-act="g-start">Play</button></div></div>`, true);
+}
+function playStart() {
+  closeSheet();
+  const { fen, side, back } = pend;
+  G = { g: new Chess(fen), side, back, start: fen, over: false };
+  show(`
+  ${topbar('Play the computer', 'g-quit', '', `${BOTS[S.bot][0]} level, you play ${side === 'w' ? 'White' : 'Black'}`)}
+  <div class="stage"><div id="bd"></div></div>
+  <div class="strip" id="mv"></div>
+  <div class="pad"><div class="coach" id="note"></div></div>
+  <nav class="dock"><button data-act="g-undo">${icon('undo')}<span>Take back</span></button><button data-act="g-hint">${icon('bulb')}<span>Hint</span></button><button data-act="g-resign">${icon('flag')}<span>Resign</span></button></nav>`);
+  G.board = new Board($('#bd'), { onMove: gMove });
+  G.board.side = side;
+  G.board.set(G.g, { flip: side === 'b' });
+  gTurn();
+}
+const gStrip = () => { const h = G.g.history(); strip($('#mv'), h, h.length, null, startPly(G.start)); };
+function gTurn() {
+  const me = G;
+  gStrip();
+  if (gOver()) return;
+  if (me.g.turn() === me.side) { me.board.interactive = true; coach('you', 'Your move', me.g.inCheck() ? 'You are in check.' : ''); return; }
+  me.board.interactive = false;
+  coach('them', 'The computer is thinking…');
+  const [, skill, depth] = BOTS[S.bot];
+  engine().search(me.g.fen(), depth ? { depth, skill } : { movetime: 1000, skill }).then(r => {
+    if (!gAlive(me) || me.over || me.g.turn() === me.side) return;
+    if (!r.best) { coach('bad', 'The computer stopped', 'Tap Take back, or start a new game.'); return; }
+    const m = uciMove(me.g, r.best);
+    me.board.set(me.g, { last: m });
+    me.board.animate(m.from, m.to);
+    sfx.move(m);
+    gTurn();
+  });
+}
+function gMove(from, to, anim) {
+  const me = G;
+  if (!me || me.over || !me.board.interactive) return;
+  const m = findMove(me.g, from, to);
+  if (!m) { me.board.render(); return; }
+  me.g.move(m.san);
+  me.board.set(me.g, { last: m });
+  if (anim) me.board.animate(m.from, m.to);
+  sfx.move(m);
+  gTurn();
+}
+function gOver() {
+  const g = G.g;
+  let res = null, why = '';
+  if (g.isCheckmate()) { res = g.turn() === G.side ? 'l' : 'w'; why = 'Checkmate.'; }
+  else if (g.isStalemate()) { res = 'd'; why = 'Stalemate.'; }
+  else if (g.isInsufficientMaterial()) { res = 'd'; why = 'Neither side can checkmate.'; }
+  else if (g.isThreefoldRepetition()) { res = 'd'; why = 'The same position came up three times.'; }
+  else if (g.isDraw()) { res = 'd'; why = 'Fifty moves without a capture or pawn move.'; }
+  if (!res) return false;
+  gEnd(res, why);
+  return true;
+}
+function gEnd(res, why) {
+  G.over = true;
+  G.result = res;
+  G.board.interactive = false;
+  S.games[res]++;
+  today().n++;
+  if (res === 'w') { addXP(25); later(sfx.done, 100); }
+  save();
+  const title = { w: 'You won', l: 'You lost', d: 'Draw' }[res];
+  coach(res === 'w' ? 'good' : res === 'l' ? 'bad' : 'info', title, why);
+  later(() => sheet(`<div class="res ${res === 'w' ? 'ok' : 'meh'}"><span class="res-ic">${icon(res === 'w' ? 'check' : res === 'l' ? 'flag' : 'restart')}</span><h2>${title}</h2><p class="muted">${why}</p>
+    <p class="note">Against the computer: ${S.games.w} won, ${S.games.l} lost, ${S.games.d} drawn.</p>
+    <div class="actions"><button class="btn" data-act="g-quit">Done</button><button class="btn go" data-act="g-again">Play again</button></div></div>`), 700);
+}
+function gUndo() {
+  const me = G;
+  if (!me || (!me.over && !me.board.interactive)) return;
+  if (!me.g.history().length) return;
+  closeSheet();
+  if (me.over) { S.games[me.result] = Math.max(0, S.games[me.result] - 1); me.over = false; save(); }
+  me.g.undo();
+  while (me.g.history().length && me.g.turn() !== me.side) me.g.undo();
+  me.board.set(me.g, {});
+  gTurn();
+}
+function gHint() {
+  const me = G;
+  if (!me || me.over || !me.board.interactive) return;
+  me.board.interactive = false;
+  coach('them', 'Looking for a good move…');
+  engine().search(me.g.fen(), { movetime: 800 }).then(r => {
+    if (!gAlive(me) || !r.best) return;
+    me.board.arrow = { from: r.best.slice(0, 2), to: r.best.slice(2, 4) };
+    me.board.render();
+    me.board.interactive = true;
+    coach('hint', 'Try this move', 'This is the computer’s suggestion.');
+  });
+}
+function gBack() {
+  const b = G && G.back;
+  G = null;
+  if (b && b.line) return lineView(b.line[0], b.line[1], b.line[2]);
+  openTab(b && b.tab ? b.tab : 'train');
+}
+
 /* ================= taps ================= */
 document.addEventListener('click', e => {
   const b = e.target.closest('[data-act]');
@@ -874,6 +1409,35 @@ document.addEventListener('click', e => {
       break;
     }
     case 'resume': if (R) nextTask(); break;
+    // tactics
+    case 'pz-mix': puzzleRun(pzSession(), 'Puzzles', { tab }, true); break;
+    case 'tactic': themeView(id); break;
+    case 'theme-demo': themeDemo(); break;
+    case 'theme-go': puzzleRun(themeList(id), THEME[id].name, { theme: id }); break;
+    case 'pz-next': nextPuzzle(); break;
+    case 'pz-hint': pzHint(); break;
+    case 'pz-show': pzShow(); break;
+    case 'pz-more': { const b = P && P.back; if (!b) break; if (b.theme) puzzleRun(themeList(b.theme), THEME[b.theme].name, b); else puzzleRun(pzSession(), 'Puzzles', b, true); break; }
+    case 'pz-quit': pzBack(); break;
+    // endgames
+    case 'eg': egView(id); break;
+    case 'eg-play': closeSheet(); egStart(id, li); break;
+    case 'eg-watch': egStart(id, li, true); break;
+    case 'eg-hint': egHint(); break;
+    case 'eg-undo': egUndo(); break;
+    case 'eg-restart': if (E) egStart(E.l.id, E.idx); break;
+    case 'eg-quit': closeSheet(); egView(id || (E && E.l.id)); break;
+    // play the computer
+    case 'play': playSheet(START, 'w', { tab }); break;
+    case 'play-here': if (V) playSheet(V.ln.fens[V.k], V.op.side, { line: [V.op.id, V.ln.i, V.k] }); break;
+    case 'bot': S.bot = +id; save(); b.parentElement.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); break;
+    case 'bot-side': if (pend) pend.side = id; b.parentElement.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); break;
+    case 'g-start': if (pend) playStart(); break;
+    case 'g-again': if (pend) playStart(); break;
+    case 'g-undo': gUndo(); break;
+    case 'g-hint': gHint(); break;
+    case 'g-resign': if (G && !G.over) gEnd('l', 'You resigned.'); break;
+    case 'g-quit': closeSheet(); gBack(); break;
     case 'session': run('session', sessionTasks(), { tab: 'train' }); break;
     case 'learn': run('learn', [{ kind: 'learn', ln: byId[id].lines[li] }], app.classList.contains('has-tabs') ? { tab } : { op: id }); break;
     case 'practice': run('practice', practiceTasks(byId[id]), { op: id }); break;
@@ -902,7 +1466,7 @@ document.addEventListener('click', e => {
         <div class="actions"><button class="btn" data-act="sheet-close">Cancel</button><button class="btn danger-btn" data-act="reset-yes">Reset</button></div></div>`, true);
       break;
     case 'reset-yes':
-      Object.assign(S, { lines: {}, weak: {}, log: {}, xp: 0 });
+      Object.assign(S, FRESH());
       save(); closeSheet(); toast('Progress reset'); progressTab();
       break;
     case 'sheet-close': closeSheet(); break;
@@ -931,7 +1495,7 @@ document.addEventListener('click', e => {
         if (!raw.startsWith('GAMBIT1:')) throw new Error();
         const data = JSON.parse(decodeURIComponent(escape(atob(raw.slice(8)))));
         if (!data || typeof data.lines !== 'object') throw new Error();
-        Object.assign(S, { lines: {}, weak: {}, log: {}, xp: 0 }, data);
+        Object.assign(S, FRESH(), data);
         save(); applyTheme(); closeSheet(); toast('Progress restored'); progressTab();
       } catch { toast('That code is not a valid backup'); }
       break;
