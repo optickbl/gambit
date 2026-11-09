@@ -1,6 +1,7 @@
 // Gambit — chess openings trainer
 import { Chess } from './chess.js';
 import { OPENINGS } from './openings.js';
+import { NOTES } from './notes.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -53,6 +54,13 @@ const moveLabel = (k, san) => `${(k >> 1) + 1}.${k & 1 ? '..' : ''}${san}`;
 const colour = k => (k & 1 ? 'Black' : 'White');
 const movesText = (moves, from = 0) =>
   moves.map((s, i) => { const k = from + i; return k & 1 ? (i ? s : `${(k + 1) >> 1}...${s}`) : `${(k >> 1) + 1}.${s}`; }).join(' ');
+for (const [opId, li, label, text] of NOTES) {
+  const ln = byId[opId] && byId[opId].lines[li];
+  const k = ln ? ln.moves.findIndex((s, i) => moveLabel(i, s) === label) : -1;
+  if (k < 0) continue;
+  const key = fen4(ln.fens[k]) + '|' + ln.moves[k];
+  if (!COMMENTS.has(key)) COMMENTS.set(key, text);
+}
 function branches(ln, k) {
   const map = new Map();
   for (const L of ln.op.lines) {
@@ -400,9 +408,9 @@ function weekStrip() {
 function trainTab() {
   const { due, fresh } = plan(), total = due.length + fresh.length, c = counts(), weak = weakList().length;
   const first = due[0] || fresh[0];
-  let heroOp = first ? first.op : null;
-  if (!heroOp) { let best = 0; for (const ln of ALL) { const r = rec(ln); if (r && r.seen > best) { best = r.seen; heroOp = ln.op; } } }
-  heroOp = heroOp || OPENINGS[0];
+  let heroLn = first;
+  if (!heroLn) { let best = 0; for (const ln of ALL) { const r = rec(ln); if (r && r.seen > best) { best = r.seen; heroLn = ln; } } }
+  heroLn = heroLn || ALL[0];
   const parts = [due.length && plural(due.length, 'review'), fresh.length && plural(fresh.length, 'new line')].filter(Boolean);
   show(`
   <header class="top">
@@ -428,11 +436,31 @@ function trainTab() {
     ${row('alert', 'Weak moves', weak ? `${plural(weak, 'move')} you keep missing` : 'Moves you miss show up here', weak ? 'weak' : '')}
     ${row('layers', 'All openings', `${c.learned} of ${ALL.length} lines learned, ${c.mastered} mastered`, 'tab', 'openings')}
   </div>`, true);
-  miniHero($('#hb'), heroOp);
+  miniHero($('#hb'), heroLn);
 }
-function miniHero(el, op) {
-  const ln = op.lines[0];
-  new Board(el).set(new Chess(ln.fens[op.start]), { flip: op.side === 'b', last: ln.vm[op.start - 1] });
+// the hero board shows where this line branches off from the main line
+function miniHero(el, ln) {
+  const base = ln.op.lines[0];
+  let k = ln.op.start;
+  if (ln !== base) {
+    k = 0;
+    while (k < ln.moves.length && ln.moves[k] === base.moves[k]) k++;
+    k = Math.min(ln.moves.length, Math.max(ln.op.start, k + 1));
+  }
+  new Board(el).set(new Chess(ln.fens[k]), { flip: ln.op.side === 'b', last: ln.vm[k - 1] });
+}
+function intro() {
+  sheet(`<div class="intro">
+    <h2>How Gambit works</h2>
+    <ul class="ideas">
+      <li><span><b>Learn.</b> A new line is shown move by move, with an arrow and the reason for every move.</span></li>
+      <li><span><b>Review.</b> Then you play it from memory: 4 hours later, then after 1, 3, 7, 16 and 35 days.</span></li>
+      <li><span><b>Level up.</b> Each perfect review moves a line up one of 6 levels. Level 6 means mastered.</span></li>
+      <li><span><b>Fix mistakes.</b> A mistake drops the line a level and brings it back sooner. The exact move you missed goes to Weak moves.</span></li>
+    </ul>
+    <p class="note">Start every day with Today’s session. It mixes your reviews with new lines.</p>
+    <div class="actions"><button class="btn go" data-act="intro-ok">Got it</button></div>
+  </div>`);
 }
 
 function openingRow(op) {
@@ -483,6 +511,7 @@ function progressTab() {
     <div class="srow"><span>Sound</span><button class="switch${S.sound ? ' on' : ''}" role="switch" aria-checked="${S.sound}" aria-label="Sound" data-act="sound"><i></i></button></div>
     <div class="srow"><span>Board</span><div class="seg sm">${[['green', 'Green'], ['brown', 'Wood'], ['blue', 'Slate']].map(([v, l]) => `<button class="${S.theme === v ? 'on' : ''}" data-act="theme" data-id="${v}">${l}</button>`).join('')}</div></div>
     <div class="srow"><span>New lines a day</span><div class="seg sm">${[1, 2, 3, 5].map(v => `<button class="${S.perDay === v ? 'on' : ''}" data-act="perday" data-id="${v}">${v}</button>`).join('')}</div></div>
+    <div class="srow link-row" role="button" tabindex="0" data-act="intro"><span>How Gambit works</span>${icon('next', 'chev')}</div>
     <div class="srow"><button class="danger" data-act="reset">Reset all progress</button></div>
   </div>
   <p class="foot">Progress is saved on this phone.</p>`, true);
@@ -865,6 +894,8 @@ document.addEventListener('click', e => {
       save(); closeSheet(); toast('Progress reset'); progressTab();
       break;
     case 'sheet-close': closeSheet(); break;
+    case 'intro': intro(); break;
+    case 'intro-ok': S.intro = 1; save(); closeSheet(); break;
   }
 });
 document.addEventListener('keydown', e => {
@@ -873,3 +904,4 @@ document.addEventListener('keydown', e => {
 
 applyTheme();
 openTab('train');
+if (!S.intro) intro();
