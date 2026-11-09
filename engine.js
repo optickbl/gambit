@@ -16,6 +16,7 @@ export class Engine {
     this.job = null;
     this.wait = null;
     this.skill = 20;
+    this.multipv = 1;
     this.ready = this.cmd('uci', 'uciok').then(() => this.cmd('isready', 'readyok'));
   }
   // if the engine ever dies, finish the pending search empty-handed and start a fresh one
@@ -36,12 +37,16 @@ export class Engine {
     const j = this.job;
     if (!j) return;
     if (l.startsWith('info') && l.includes(' score ')) {
-      const s = l.match(/ score (cp|mate) (-?\d+)/);
-      if (s) j.score = s[1] === 'mate' ? { mate: +s[2] } : { cp: +s[2] };
+      // with several lines (MultiPV, or a lowered skill level) only line 1 is the engine's main line
+      const n = +((l.match(/ multipv (\d+)/) || [])[1] || 1);
+      const s = l.match(/ score (cp|mate) (-?\d+)/), pv = l.match(/ pv (.+)$/);
+      const score = s ? (s[1] === 'mate' ? { mate: +s[2] } : { cp: +s[2] }) : null, moves = pv ? pv[1].trim().split(/\s+/) : null;
+      if (n > 1) { if (score && moves) j.lines[n - 1] = { score, pv: moves }; return; }
+      if (score) j.score = score;
       const d = l.match(/ depth (\d+)/);
       if (d) j.depth = +d[1];
-      const pv = l.match(/ pv (.+)$/);
-      if (pv) j.pv = pv[1].trim().split(/\s+/);
+      if (moves) j.pv = moves;
+      if (score && moves) j.lines[0] = { score, pv: moves };
     } else if (l.startsWith('bestmove')) {
       this.job = null;
       clearTimeout(j.dog);
@@ -51,12 +56,14 @@ export class Engine {
     }
   }
   // Search a position. The score is from the point of view of the side to move.
-  search(fen, { movetime = 700, depth = 0, skill = 20 } = {}) {
+  // multipv > 1 also returns the next best lines in `lines` (line 0 is the best).
+  search(fen, { movetime = 700, depth = 0, skill = 20, multipv = 1 } = {}) {
     const run = async () => {
       await this.ready;
       if (skill !== this.skill) { this.skill = skill; this.w.postMessage(`setoption name Skill Level value ${skill}`); }
+      if (multipv !== this.multipv) { this.multipv = multipv; this.w.postMessage(`setoption name MultiPV value ${multipv}`); }
       return new Promise(res => {
-        const job = { res, score: null, best: null, pv: [], depth: 0 };
+        const job = { res, score: null, best: null, pv: [], depth: 0, lines: [] };
         job.dog = setTimeout(() => { if (this.job === job) this.crash(); }, (depth ? 20000 : movetime) + 8000);
         this.job = job;
         this.w.postMessage('position fen ' + fen);

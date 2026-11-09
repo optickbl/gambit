@@ -89,8 +89,9 @@ const shuffle = a => { for (let i = a.length - 1; i > 0; i--) { const j = Math.f
 
 /* ================= saved progress ================= */
 const KEY = 'gambit.v2';
-const FRESH = () => ({ lines: {}, weak: {}, log: {}, xp: 0, pz: {}, prating: 1000, pn: 0, eg: {}, games: { w: 0, l: 0, d: 0 } });
-const S = { ...FRESH(), sound: true, theme: 'green', perDay: 2, bot: 1, warn: true };
+const FRESH = () => ({ lines: {}, weak: {}, log: {}, xp: 0, pz: {}, prating: 1000, pn: 0, eg: {}, games: { w: 0, l: 0, d: 0 },
+  elo: { r: 800, n: 0, peak: 800, w: 0, l: 0, d: 0, hist: [] }, beat: {} });
+const S = { ...FRESH(), sound: true, theme: 'green', perDay: 2, bot: 1, warn: true, rated: false, tc: 0 };
 try {
   const saved = localStorage.getItem(KEY);
   if (saved) Object.assign(S, JSON.parse(saved));
@@ -104,6 +105,7 @@ try {
     }
   }
 } catch {}
+if (!S.botv) { S.bot = [0, 2, 5, 7][S.bot] ?? 2; S.botv = 2; }   // four old levels onto the bot ladder
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch {} };
 const noon = (t = Date.now()) => { const d = new Date(t); d.setHours(12, 0, 0, 0); return d.getTime(); };
 const dkey = (t = Date.now()) => new Date(t).toLocaleDateString('en-CA');
@@ -256,8 +258,8 @@ class Board {
     el.classList.add('board');
     if (mini) el.classList.add('mini'); else this.bind();
   }
-  set(g, { flip = this.flip, last = null, arrow = null } = {}) {
-    Object.assign(this, { g, flip, last, arrow, sel: null, targets: [], hintSq: null });
+  set(g, { flip = this.flip, last = null, arrow = null, badge = null } = {}) {
+    Object.assign(this, { g, flip, last, arrow, badge, sel: null, targets: [], hintSq: null });
     this.render();
   }
   name(r, c) { return FILES[this.flip ? 7 - c : c] + (this.flip ? r + 1 : 8 - r); }
@@ -276,6 +278,7 @@ class Board {
       if (sq === chk) cls += ' chk';
       if (this.targets.includes(sq)) cls += p ? ' cap' : ' dot';
       let inner = p ? `<i class="pc ${p.color}${p.type.toUpperCase()}"></i>` : '';
+      if (this.badge && sq === this.badge.sq) inner += this.badge.html.replace('class="mk', 'class="mk bdg');
       if (!this.mini) {
         if (c === 0) inner += `<b class="rk">${sq[1]}</b>`;
         if (r === 7) inner += `<b class="fl">${sq[0]}</b>`;
@@ -465,7 +468,8 @@ function trainTab() {
     ${row('shuffle', 'Quick test', c.learned ? '10 positions from lines you have learned' : 'Unlocks after your first line', c.learned ? 'test' : '')}
     ${row('alert', 'Weak moves', weak ? `${plural(weak, 'move')} you keep missing` : 'Moves you miss show up here', weak ? 'weak' : '')}
     ${row('swords', 'Puzzles', `${pzDue().length ? `${plural(pzDue().length, 'puzzle')} to retry, ` : ''}tactics rating ${S.prating}`, 'pz-mix')}
-    ${row('play', 'Play the computer', S.games.w + S.games.l + S.games.d ? `${S.games.w} won, ${S.games.l} lost, ${S.games.d} drawn` : 'Use your openings in a real game', 'play')}
+    ${row('play', 'Play the computer', S.elo.n ? `Your rating ${S.elo.r}${S.elo.n < 10 ? ', still settling' : ''}, ${S.games.w} won, ${S.games.l} lost, ${S.games.d} drawn`
+      : S.games.w + S.games.l + S.games.d ? `${S.games.w} won, ${S.games.l} lost, ${S.games.d} drawn` : 'Use your openings in a real game', 'play')}
     ${row('layers', 'All openings', `${c.learned} of ${ALL.length} lines learned, ${c.mastered} mastered`, 'tab', 'openings')}
   </div>`, true);
   miniHero($('#hb'), heroLn);
@@ -512,6 +516,21 @@ function openingsTab() {
   $$('[data-mini]').forEach(el => miniBoard(el, byId[el.dataset.mini]));
 }
 
+// your rating against the computer: the number, the change from your last rated game, and the last 12 results as a trend line
+function ratingTile() {
+  const e = S.elo;
+  if (!e.n) return `<section class="panel rtile"><p class="tl">Rating against the computer</p><p class="tv"><b>${e.r}</b></p>
+    <p class="tn">Everyone starts at 800. Play a rated game against the computer to move it.</p></section>`;
+  const pts = [800, ...e.hist.map(h => h[1])].slice(-12), d = e.r - pts[pts.length - 2];
+  const lo = Math.min(...pts), hi = Math.max(...pts), span = Math.max(hi - lo, 40);
+  const x = i => 6 + (i * 288) / (pts.length - 1), y = v => 38 - ((v - lo) / span) * 32;
+  const line = pts.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+  const best = BOTS.reduce((b, bot, i) => (S.beat[i] ? bot : b), null);
+  return `<section class="panel rtile"><p class="tl">Rating against the computer</p>
+    <p class="tv"><b>${e.r}</b><em class="${d > 0 ? 'up' : d < 0 ? 'down' : ''}">${d > 0 ? '+' : d < 0 ? '−' : '±'}${Math.abs(d)} from your last game</em></p>
+    <svg class="spark" viewBox="0 0 300 44" role="img" aria-label="Rating over the last ${pts.length - 1} rated games, from ${pts[0]} to ${e.r}"><polyline points="${line}"/><circle cx="${x(pts.length - 1).toFixed(1)}" cy="${y(e.r).toFixed(1)}" r="4"/></svg>
+    <p class="tn">Best ${e.peak}. ${e.w} won, ${e.l} lost, ${e.d} drawn${e.n < 10 ? `, and it moves faster for your first 10 games` : ''}.${best ? ` Strongest bot beaten: ${best.name} (${best.elo}).` : ''}</p></section>`;
+}
 // redraw Progress after a setting changes, staying where you were on the page
 function settingsChanged() { const y = window.scrollY; progressTab(); app.classList.remove('enter'); window.scrollTo(0, y); }
 function progressTab() {
@@ -540,6 +559,8 @@ function progressTab() {
     <div><b>${PRACTICE.filter(solved).length}</b><span>Puzzles solved</span></div>
     <div><b>${ENDGAMES.reduce((s, l) => s + egCount(l), 0)}/${ENDGAMES.reduce((s, l) => s + l.fens.length, 0)}</b><span>Endgames done</span></div>
   </section>
+  <h2 class="h2">Rated games</h2>
+  ${ratingTile()}
   <h2 class="h2">Training days</h2>
   <section class="panel">${cal}</section>
   ${weak ? `<div class="group mt">${row('alert', 'Weak moves', `${plural(weak, 'move')} to fix`, 'weak')}</div>` : ''}
@@ -557,7 +578,7 @@ function progressTab() {
     <div class="srow"><button class="danger" data-act="reset">Reset all progress</button></div>
   </div>
   <p class="foot">Progress is saved on this phone. Back it up now and then.</p>
-  <p class="foot credits">Piece sounds recorded by Stefan Haack for <a href="https://github.com/shaack/chess-console" target="_blank" rel="noopener">chess-console</a>, <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>, trimmed and level-matched. Engine: Stockfish, GPL-3.0.</p>`, true);
+  <p class="foot credits">Piece sounds recorded by Stefan Haack for <a href="https://github.com/shaack/chess-console" target="_blank" rel="noopener">chess-console</a>, <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>, trimmed and level-matched. Engine: Stockfish, GPL-3.0. Opening names: Lichess, public domain.</p>`, true);
   $$('[data-mini]').forEach(el => miniBoard(el, byId[el.dataset.mini]));
 }
 
@@ -1305,46 +1326,156 @@ function egWatchStep(me) {
 
 /* ================= play the computer ================= */
 const START = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
-const BOTS = [['Beginner', 0, 1], ['Casual', 3, 3], ['Club', 8, 6], ['Strong', 15, 0]]; // name, skill level, depth (0 = timed)
+// the computer's ladder, weakest first: Stockfish skill level and search depth (depth 0 = one second a move)
+const BOTS = [
+  { name: 'Nico', elo: 400, pc: 'bP', about: 'Just learned how the pieces move.', skill: 0, depth: 1 },
+  { name: 'Lina', elo: 600, pc: 'bN', about: 'Loves to attack and forgets to defend.', skill: 1, depth: 2 },
+  { name: 'Tariq', elo: 800, pc: 'bB', about: 'Knows the basics but still hangs pieces.', skill: 3, depth: 3 },
+  { name: 'Sofia', elo: 1000, pc: 'bR', about: 'Plays solid openings and misses some tactics.', skill: 5, depth: 4 },
+  { name: 'Marc', elo: 1200, pc: 'bQ', about: 'A club regular who punishes loose pieces.', skill: 7, depth: 5 },
+  { name: 'Eleni', elo: 1400, pc: 'bK', about: 'Sharp, and quick to spot tactics.', skill: 8, depth: 6 },
+  { name: 'Karim', elo: 1700, pc: 'wN', about: 'A strong club player with few weak spots.', skill: 11, depth: 8 },
+  { name: 'Anya', elo: 2000, pc: 'wQ', about: 'Expert level. She rarely makes a mistake.', skill: 15, depth: 0 },
+];
+// clock choices: minutes each, plus seconds added after every move
+const TCS = [{ min: 0, inc: 0, label: 'Off' }, { min: 5, inc: 0, label: '5 min' }, { min: 10, inc: 0, label: '10 min' }, { min: 15, inc: 10, label: '15+10' }, { min: 30, inc: 0, label: '30 min' }];
+const tcName = tc => (!tc.min ? 'no clock' : tc.inc ? `${tc.min} + ${tc.inc}` : `${tc.min} minutes`);
 const PIECE_NAME = { p: 'pawn', n: 'knight', b: 'bishop', r: 'rook', q: 'queen', k: 'king' };
+const VAL = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
 // G.view: null while you are on the game itself, or the number of moves shown while you look back
 // G.canMove: whether the game is waiting for your move (the board only takes it when you are not looking back)
 // G.note: what the coach says about the game, shown again when you come back from looking back
+// G.clock: time left for each colour in ms; `run` is the colour whose time is running since `at`
 let G = null, pend = null;
 const gAlive = me => G === me && me.board.el.isConnected;
 const gLast = me => me.g.history({ verbose: true }).pop() || null;
 function playSheet(fen, side, back) {
   pend = { fen, side, back };
   const fresh = fen === START;
-  sheet(`<div class="res"><h2>Play the computer</h2>
-    <p class="note">${fresh ? 'Pick a level and a colour.' : 'Play on from this position with the side you were learning.'}</p>
-    <div class="seg sm wide">${BOTS.map(([n], i) => `<button class="${S.bot === i ? 'on' : ''}" data-act="bot" data-id="${i}">${n}</button>`).join('')}</div>
+  sheet(`<div class="res play"><h2>Play the computer</h2>
+    ${fresh ? `<div class="seg sm wide" id="pmode">${[['casual', 'Casual'], ['rated', 'Rated']].map(([v, n]) => `<button data-act="g-mode" data-id="${v}">${n}</button>`).join('')}</div>
+    <p class="note" id="pnote"></p>`
+    : '<p class="note">Play on from this position with the side you were learning. It’s a casual game, so your rating stays the same.</p>'}
+    <div class="bots" id="pbots">${BOTS.map((b, i) => `<button class="bot" data-act="bot" data-id="${i}" aria-label="${b.name}, rated ${b.elo}"><i class="pc ${b.pc}"></i><b>${b.name}</b><span>${b.elo}</span>${S.beat[i] ? icon('check', 'won') : ''}</button>`).join('')}</div>
+    <p class="note" id="pabout"></p>
+    <div class="seg sm wide" id="ptc">${TCS.map((t, i) => `<button data-act="tc" data-id="${i}">${t.label}</button>`).join('')}</div>
     ${fresh ? `<div class="seg sm wide">${[['w', 'White'], ['b', 'Black']].map(([v, n]) => `<button class="${side === v ? 'on' : ''}" data-act="bot-side" data-id="${v}">${n}</button>`).join('')}</div>` : ''}
     <div class="actions"><button class="btn" data-act="sheet-close">Cancel</button><button class="btn go" data-act="g-start">Play</button></div></div>`, true);
+  playSync(true);
+}
+// show the current choices in the play sheet
+function playSync(scroll) {
+  $$('#pmode button').forEach(b => b.classList.toggle('on', (b.dataset.id === 'rated') === S.rated));
+  const note = $('#pnote'), bot = BOTS[S.bot];
+  if (note) note.textContent = S.rated ? `No take backs, hints or blunder warnings. Your rating, now ${S.elo.r}, goes up or down with the result.` : 'Take backs, hints and blunder warnings are on. Your rating stays the same.';
+  $$('#pbots .bot').forEach(b => b.classList.toggle('on', +b.dataset.id === S.bot));
+  $('#pabout').textContent = bot.about + (S.beat[S.bot] ? ` You’ve beaten ${bot.name} in a rated game.` : '');
+  $$('#ptc button').forEach(b => b.classList.toggle('on', +b.dataset.id === S.tc));
+  const row = $('#pbots'), on = $('#pbots .bot.on');
+  if (scroll && row && on) row.scrollLeft = on.offsetLeft - row.clientWidth / 2 + on.offsetWidth / 2;
 }
 function playStart() {
   closeSheet();
   const { fen, side, back } = pend;
-  G = { g: new Chess(fen), side, back, start: fen, over: false, view: null, canMove: false, stuck: false, note: null, hint: null };
+  const bot = BOTS[S.bot], tc = TCS[S.tc] || TCS[0], rated = fen === START && S.rated, opp = side === 'w' ? 'b' : 'w';
+  const me = G = { g: new Chess(fen), side, back, start: fen, over: false, view: null, canMove: false, stuck: false, note: null, hint: null,
+    bot, bi: S.bot, rated, tc, clock: tc.min ? { w: tc.min * MIN, b: tc.min * MIN, run: null, at: 0 } : null };
   show(`
-  ${topbar('Play the computer', 'g-quit', '', `${BOTS[S.bot][0]} level, you play ${side === 'w' ? 'White' : 'Black'}`)}
+  ${topbar('Play the computer', 'g-quit', '', `${rated ? 'Rated' : 'Casual'} game, ${tcName(tc)}`)}
+  <div class="pbar" id="pb-${opp}"></div>
   <div class="stage"><div id="bd"></div></div>
+  <div class="pbar" id="pb-${side}"></div>
   <div class="strip" id="mv"></div>
   <div class="pad"><div class="coach" id="note"></div></div>
   <nav class="dock">
-    <button data-act="g-undo">${icon('undo')}<span>Take back</span></button>
-    <button data-act="g-hint">${icon('bulb')}<span>Hint</span></button>
+    ${rated ? '' : `<button data-act="g-undo">${icon('undo')}<span>Take back</span></button>
+    <button data-act="g-hint">${icon('bulb')}<span>Hint</span></button>`}
     <button data-act="g-resign">${icon('flag')}<span>Resign</span></button>
     <button class="step" data-act="g-prev" aria-label="Previous move">${icon('back')}</button>
     <button class="step" data-act="g-next" aria-label="Next move">${icon('next')}</button>
   </nav>`);
-  G.board = new Board($('#bd'), { onMove: gMove });
-  G.board.side = side;
+  me.board = new Board($('#bd'), { onMove: gMove });
+  me.board.side = side;
   // while you look back, touching the board brings you back to the game
-  G.board.el.addEventListener('pointerdown', () => { if (G && G.view != null) gGo(Infinity); });
+  me.board.el.addEventListener('pointerdown', () => { if (G && G.view != null) gGo(Infinity); });
   soundSide = side;
-  G.board.set(G.g, { flip: side === 'b' });
+  me.board.set(me.g, { flip: side === 'b' });
+  if (me.clock) me.tick = setInterval(() => gTick(me), 100);
   gTurn();
+}
+/* --- clocks --- */
+const clkLeft = (me, c) => me.clock[c] - (me.clock.run === c ? Date.now() - me.clock.at : 0);
+function clkStop(me) { const k = me.clock; if (!k || !k.run) return; k[k.run] -= Date.now() - k.at; k.run = null; }
+function clkRun(me, c) {
+  const k = me.clock;
+  if (!k || me.over || k.run === c) return;
+  clkStop(me);
+  if (document.hidden) { k.paused = true; return; }   // starts when you come back to the app
+  k.run = c; k.at = Date.now();
+}
+function clkAdd(me, c) { if (me.clock && me.tc.inc) me.clock[c] += me.tc.inc * 1000; }
+function clkText(ms) {
+  if (ms < 10000) return '0:0' + (Math.floor(ms / 100) / 10).toFixed(1);
+  const s = Math.ceil(ms / 1000);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+// the clock does not run while the app is in the background (a call, another app)
+document.addEventListener('visibilitychange', () => {
+  const me = G, k = me && me.clock;
+  if (!k || me.over) return;
+  if (document.hidden) { if (k.run) { clkStop(me); k.paused = true; } }
+  else if (k.paused) { k.paused = false; clkRun(me, me.pending ? me.side : me.g.turn()); }
+});
+function gTick(me) {
+  if (!me.clock) return;
+  if (!gAlive(me)) { clearInterval(me.tick); return; }
+  for (const c of ['w', 'b']) {
+    const el = $('#ck-' + c);
+    if (!el) continue;
+    const left = Math.max(0, clkLeft(me, c));
+    el.textContent = clkText(left);
+    el.classList.toggle('on', me.clock.run === c);
+    el.classList.toggle('low', left < 20000);
+  }
+  const run = me.clock.run;
+  if (run && !me.over && clkLeft(me, run) <= 0) gFlag(me, run);
+}
+// a side with only a king, or a king and one knight or bishop, cannot checkmate
+function noMate(g, c) {
+  const ps = [];
+  for (const row of g.board()) for (const p of row) if (p && p.color === c && p.type !== 'k') ps.push(p.type);
+  return !ps.length || (ps.length === 1 && (ps[0] === 'n' || ps[0] === 'b'));
+}
+function gFlag(me, c) {
+  clkStop(me);
+  me.clock[c] = 0;
+  const other = c === 'w' ? 'b' : 'w', you = c === me.side, draw = noMate(me.g, other);
+  const name = me.bot.name;
+  if (draw) gEnd('d', you ? `You ran out of time, but ${name} can’t checkmate you.` : `${name} ran out of time, but you can’t checkmate them.`);
+  else gEnd(you ? 'l' : 'w', you ? 'You ran out of time.' : `${name} ran out of time.`);
+}
+// the bars above and below the board: who is playing, what they have taken, and their clock
+function gBars() {
+  const me = G, hist = me.g.history({ verbose: true }), k = me.view ?? hist.length;
+  const g = me.view == null ? me.g : new Chess(k ? hist[k - 1].after : me.start);
+  const have = { w: {}, b: {} };
+  for (const row of g.board()) for (const p of row) if (p) have[p.color][p.type] = (have[p.color][p.type] || 0) + 1;
+  const full = { n: 2, b: 2, r: 2, q: 1 }, mat = c => Object.entries(have[c]).reduce((s, [t, n]) => s + VAL[t] * n, 0);
+  const lead = mat('w') - mat('b');
+  for (const c of ['w', 'b']) {
+    const el = $('#pb-' + c);
+    if (!el) continue;
+    const o = c === 'w' ? 'b' : 'w', you = c === me.side, h = have[o];
+    // what this side has taken is what the other side is missing (a promoted pawn is not missing)
+    const extra = ['n', 'b', 'r', 'q'].reduce((s, t) => s + Math.max(0, (h[t] || 0) - full[t]), 0);
+    let taken = '';
+    for (let i = (h.p || 0) + extra; i < 8; i++) taken += `<i class="pc ${o}P"></i>`;
+    for (const t of ['n', 'b', 'r', 'q']) for (let i = h[t] || 0; i < full[t]; i++) taken += `<i class="pc ${o}${t.toUpperCase()}"></i>`;
+    const up = c === 'w' ? lead : -lead;
+    el.innerHTML = `<i class="pc pav ${you ? c + 'K' : me.bot.pc}"></i><span class="pn"><b>${you ? 'You' : me.bot.name}</b><small>${you ? S.elo.r : me.bot.elo}</small></span>`
+      + `<span class="caps">${taken}${up > 0 ? `<em>+${up}</em>` : ''}</span>${me.clock ? `<span class="clk" id="ck-${c}"></span>` : ''}`;
+  }
+  gTick(me);
 }
 function gNote(me, kind, title, text = '') {
   me.note = [kind, title, text];
@@ -1360,14 +1491,17 @@ function gTurn() {
   if (me.g.turn() === me.side) {
     gLet(me, true);
     gNote(me, 'you', 'Your move', me.g.inCheck() ? 'You are in check.' : '');
+    clkRun(me, me.side);
     gPrecheck(me);
   } else {
     gLet(me, false);
-    gNote(me, 'them', 'The computer is thinking…');
+    gNote(me, 'them', `${me.bot.name} is thinking…`);
     // the computer's thinking time counts from your move, so the blunder check is part of it
-    const [, skill, depth] = BOTS[S.bot], t0 = me.movedAt || Date.now();
+    const { skill, depth } = me.bot, comp = me.g.turn(), t0 = me.movedAt || Date.now();
     me.movedAt = 0;
-    engine().search(me.g.fen(), depth ? { depth, skill } : { movetime: 1000, skill }).then(r => {
+    clkRun(me, comp);
+    const movetime = me.clock ? Math.max(100, Math.min(1000, clkLeft(me, comp) / 30)) : 1000;
+    engine().search(me.g.fen(), depth ? { depth, skill } : { movetime, skill }).then(r => {
       if (!gAlive(me) || me.over || me.g.turn() === me.side) return;
       const left = r.best ? gThinkTime(me, r.best) - (Date.now() - t0) : 0;
       if (left > 0) later(() => gReply(me, r), left);
@@ -1386,11 +1520,15 @@ function gThinkTime(me, best) {
   else if (me.start === START && g.history().length < 8) ms = r(900, 2000);
   else if (g.inCheck()) ms = r(1000, 2500);
   else ms = 1500 + 3500 * Math.random() ** 1.6;   // usually 2 to 4 seconds, now and then up to 5
-  return ms * ([0.9, 1, 1.1, 1.2][S.bot] || 1);    // stronger levels take a little longer
+  ms *= 0.9 + 0.05 * me.bi;                         // stronger bots take a little longer
+  if (me.clock) ms = Math.min(ms, Math.max(150, clkLeft(me, g.turn()) / 25));   // and hurry when their clock runs low
+  return ms;
 }
 function gReply(me, r) {
   if (!gAlive(me) || me.over || me.g.turn() === me.side) return;
-  if (!r.best) { me.stuck = true; gNote(me, 'bad', 'The computer stopped', 'Tap Take back, or start a new game.'); gShow(); return; }
+  if (!r.best) { me.stuck = true; gNote(me, 'bad', `${me.bot.name} stopped`, 'The engine didn’t answer. Tap Take back, or start a new game.'); gShow(); return; }
+  clkStop(me);
+  clkAdd(me, me.g.turn());
   const m = uciMove(me.g, r.best);
   // while you look back, the board stays where you are; the move still sounds and shows in the list
   if (me.view == null) { me.board.set(me.g, { last: m }); me.board.animate(m.from, m.to); }
@@ -1409,17 +1547,19 @@ function gMove(from, to, anim) {
   me.board.set(me.g, { last: m });
   if (anim) me.board.animate(m.from, m.to);
   sfx.move(m);
-  // a move you already chose to play after a warning is not questioned again
-  if (!S.warn || me.warned === key) return gTurn();
+  clkStop(me);
+  // rated games have no warnings, and a move you already chose to play after a warning is not questioned again
+  if (!S.warn || me.rated || me.warned === key) { clkAdd(me, me.side); return gTurn(); }
   gLet(me, false);
-  gNote(me, 'them', 'The computer is thinking…');
+  gNote(me, 'them', `${me.bot.name} is thinking…`);
   gShow();
   const after = me.g.fen();
   gCheck(me, fen, m).then(why => {
     if (!gAlive(me) || me.over || me.g.fen() !== after) return;
-    if (!why) return gTurn();
+    if (!why) { clkAdd(me, me.side); return gTurn(); }
     me.warned = key;
     me.pending = m;
+    clkRun(me, me.side);                      // still your time while you decide
     if (me.view != null) gGo(Infinity);
     gNote(me, 'hint', 'Are you sure?', why);
     sheet(`<div class="res meh"><span class="res-ic">${icon('alert')}</span><h2>Are you sure?</h2><p class="note">${why}</p>
@@ -1427,10 +1567,9 @@ function gMove(from, to, anim) {
   });
 }
 /* --- blunder warning --- */
-const VAL = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
 // while it is your move, the engine quietly scores the position, so your move can be checked straight away
 function gPrecheck(me) {
-  if (!S.warn) return;
+  if (!S.warn || me.rated) return;
   const fen = me.g.fen();
   if (!me.pre || me.pre.fen !== fen) me.pre = { fen, p: engine().search(fen, { movetime: 400 }) };
 }
@@ -1448,17 +1587,17 @@ async function gCheck(me, fen, m) {
     const r = await engine().search(g.fen(), { movetime: 500 });
     if (!r || !r.score) return null;
     const doomed = pre.score.mate != null && pre.score.mate < 0;            // you were being mated anyway
-    if (r.score.mate != null && r.score.mate > 0 && !doomed) return r.score.mate <= 3 ? 'It lets the computer checkmate you.' : 'It lets the computer force checkmate.';
+    if (r.score.mate != null && r.score.mate > 0 && !doomed) return r.score.mate <= 3 ? `It lets ${me.bot.name} checkmate you.` : `It lets ${me.bot.name} force checkmate.`;
     after = clamp(-toCp(r.score));
-    why = gLoses(g.fen(), r.pv, me.side);
+    why = gLoses(g.fen(), r.pv, me.side, me.bot.name);
   }
   // only real blunders: losing a piece or more, not small slips
   const loss = before - after, drop = winP(before) - winP(after);
   if (loss < 250 || (drop < 0.15 && loss < 450)) return null;
-  return why || 'The computer has a strong answer to it.';
+  return why || `${me.bot.name} has a strong answer to it.`;
 }
 // what the computer's best line wins from you, in words
-function gLoses(fen, pv, side) {
+function gLoses(fen, pv, side, name) {
   const g = new Chess(fen);
   let net = 0, big = null;
   for (const u of (pv || []).slice(0, 10)) {
@@ -1469,7 +1608,7 @@ function gLoses(fen, pv, side) {
     else { net += VAL[mv.captured]; if (!big || VAL[mv.captured] > VAL[big]) big = mv.captured; }
   }
   if (net < 2 || !big) return '';
-  return big === 'p' ? 'The computer can win material.' : `The computer can win your ${PIECE_NAME[big]}.`;
+  return big === 'p' ? `${name} can win material.` : `${name} can win your ${PIECE_NAME[big]}.`;
 }
 function gRethink() {
   const me = G, m = me.pending;
@@ -1504,15 +1643,16 @@ function gGo(k) {
 function gShow() {
   const me = G, hist = me.g.history({ verbose: true }), n = hist.length, from = startPly(me.start), k = me.view ?? n;
   strip($('#mv'), hist.map(m => m.san), k, 'g-view', from);
+  gBars();
   const prev = $('[data-act="g-prev"]'), next = $('[data-act="g-next"]');
   if (prev) prev.disabled = k === 0;
   if (next) { next.disabled = me.view == null; next.classList.toggle('primary', me.view != null); }
   if (me.view == null) { if (me.note) coach(...me.note); return; }
   const m = hist[k - 1], nx = hist[k], mine = x => x.color === me.side;
-  const title = m ? `${mine(m) ? 'You' : 'The computer'} played ${moveLabel(from + k - 1, m.san)}`
+  const title = m ? `${mine(m) ? 'You' : me.bot.name} played ${moveLabel(from + k - 1, m.san)}`
     : me.start === START ? 'Start of the game' : 'Starting position';
-  let text = `Next ${mine(nx) ? 'you' : 'the computer'} played ${moveLabel(from + k, nx.san)}`;
-  if (nx.captured) text += `, taking ${mine(nx) ? 'the computer’s' : 'your'} ${PIECE_NAME[nx.captured]}`;
+  let text = `Next ${mine(nx) ? 'you' : me.bot.name} played ${moveLabel(from + k, nx.san)}`;
+  if (nx.captured) text += `, taking ${mine(nx) ? `${me.bot.name}’s` : 'your'} ${PIECE_NAME[nx.captured]}`;
   text += '.';
   if (!me.over && me.canMove) text += ' It’s your move in the game.';
   coach('info', title, text, '<button class="btn sm" data-act="g-live">Back to game</button>');
@@ -1531,6 +1671,8 @@ function gOver() {
 }
 function gEnd(res, why) {
   const me = G;
+  clkStop(me);
+  clearInterval(me.tick);
   me.over = true;
   me.result = res;
   // the game is over: show the final position, even if you were looking back
@@ -1539,18 +1681,33 @@ function gEnd(res, why) {
   S.games[res]++;
   today().n++;
   if (res === 'w') addXP(25);
+  const rate = me.rated ? gRate(me, res) : '';
   later(sfx.done, 100);
   save();
   const title = { w: 'You won', l: 'You lost', d: 'Draw' }[res];
   gNote(me, res === 'w' ? 'good' : res === 'l' ? 'bad' : 'info', title, why);
   gShow();
-  later(() => gAlive(me) && me.over && sheet(`<div class="res ${res === 'w' ? 'ok' : 'meh'}"><span class="res-ic">${icon(res === 'w' ? 'check' : res === 'l' ? 'flag' : 'restart')}</span><h2>${title}</h2><p class="muted">${why}</p>
-    <p class="note">Against the computer: ${S.games.w} won, ${S.games.l} lost, ${S.games.d} drawn.</p>
+  later(() => gAlive(me) && me.over && sheet(`<div class="res ${res === 'w' ? 'ok' : 'meh'}"><span class="res-ic">${icon(res === 'w' ? 'check' : res === 'l' ? 'flag' : 'restart')}</span><h2>${title}</h2><p class="muted">${why}</p>${rate}
+    <p class="note">${me.rated ? `Rated games: ${S.elo.w} won, ${S.elo.l} lost, ${S.elo.d} drawn.` : `Against the computer: ${S.games.w} won, ${S.games.l} lost, ${S.games.d} drawn.`}</p>
     <div class="actions"><button class="btn" data-act="g-quit">Done</button><button class="btn" data-act="g-review">Review</button><button class="btn go" data-act="g-again">Play again</button></div></div>`), 700);
+}
+function gRate(me, res) {
+  const e = S.elo, before = e.r, first = res === 'w' && !S.beat[me.bi];
+  const expect = 1 / (1 + 10 ** ((me.bot.elo - before) / 400)), score = res === 'w' ? 1 : res === 'd' ? 0.5 : 0;
+  e.r = Math.max(100, Math.round(before + (e.n < 10 ? 40 : 24) * (score - expect)));
+  e.n++;
+  e[res]++;
+  e.peak = Math.max(e.peak, e.r);
+  e.hist.push([Date.now(), e.r]);
+  if (e.hist.length > 300) e.hist.shift();
+  if (res === 'w') S.beat[me.bi] = true;
+  const d = e.r - before;
+  return `<p class="rate">Rating <b>${e.r}</b> <em class="${d > 0 ? 'up' : d < 0 ? 'down' : ''}">${d > 0 ? '+' : d < 0 ? '−' : '±'}${Math.abs(d)}</em></p>`
+    + (first ? `<p class="note">Your first win against ${me.bot.name}.</p>` : '');
 }
 function gUndo() {
   const me = G;
-  if (!me || (!me.over && !me.canMove && !me.stuck)) return;
+  if (!me || me.rated || (!me.over && !me.canMove && !me.stuck)) return;
   if (!me.g.history().length) return;
   closeSheet();
   if (me.over) { S.games[me.result] = Math.max(0, S.games[me.result] - 1); me.over = false; save(); }
@@ -1562,7 +1719,7 @@ function gUndo() {
 }
 function gHint() {
   const me = G;
-  if (!me || me.over || !me.canMove) return;
+  if (!me || me.rated || me.over || !me.canMove) return;
   if (me.view != null) gGo(Infinity);
   gLet(me, false);
   gNote(me, 'them', 'Looking for a good move…');
@@ -1573,7 +1730,7 @@ function gHint() {
     else {
       me.hint = { from: r.best.slice(0, 2), to: r.best.slice(2, 4) };
       if (me.view == null) { me.board.arrow = me.hint; me.board.render(); }
-      gNote(me, 'hint', 'Try this move', 'This is the computer’s suggestion.');
+      gNote(me, 'hint', 'Try this move', 'This is the engine’s suggestion.');
     }
     gShow();
   });
@@ -1611,13 +1768,68 @@ function bookText(b) {
   if (b.mine) return `The game followed your ${name} lines until you left them with ${at}.`;
   return `The game followed your ${name} lines until the computer left them with ${at}.`;
 }
+// how each move is rated in the review, best to worst (the names chess.com uses)
+const MK = {
+  star: '<svg viewBox="0 0 24 24"><path d="M12 3.2l2.6 5.5 6 .7-4.4 4.1 1.2 6L12 16.6l-5.4 2.9 1.2-6-4.4-4.1 6-.7z"/></svg>',
+  thumb: '<svg viewBox="0 0 24 24"><path d="M3 10.5h3.5V20H3zM8.5 20h8.3a2 2 0 0 0 2-1.6l1.4-6.4a2 2 0 0 0-2-2.4h-4.6l.7-3.4a1.6 1.6 0 0 0-2.9-1.2l-2.9 5.4z"/></svg>',
+  check: '<svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  book: '<svg viewBox="0 0 24 24"><path d="M3.5 5.5c2.8-.9 5.6-.6 7.5 1v13c-1.9-1.5-4.7-1.8-7.5-.9zM20.5 5.5c-2.8-.9-5.6-.6-7.5 1v13c1.9-1.5 4.7-1.8 7.5-.9z"/></svg>',
+  x: '<svg viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round"/></svg>',
+};
+const CLS = {
+  brilliant: { name: 'Brilliant', sym: '!!', say: 'brilliant', kind: 'good' },
+  great: { name: 'Great', sym: '!', say: 'a great move', kind: 'good' },
+  best: { name: 'Best', sym: MK.star, say: 'the best move', kind: 'good' },
+  excellent: { name: 'Excellent', sym: MK.thumb, say: 'excellent', kind: 'good' },
+  good: { name: 'Good', sym: MK.check, say: 'good', kind: 'info' },
+  book: { name: 'Book', sym: MK.book, say: 'a book move', kind: 'info' },
+  inaccuracy: { name: 'Inaccuracy', sym: '?!', say: 'an inaccuracy', kind: 'hint' },
+  mistake: { name: 'Mistake', sym: '?', say: 'a mistake', kind: 'hint' },
+  miss: { name: 'Miss', sym: MK.x, say: 'a miss', kind: 'bad' },
+  blunder: { name: 'Blunder', sym: '??', say: 'a blunder', kind: 'bad' },
+};
+const SLIPS = new Set(['inaccuracy', 'mistake', 'miss', 'blunder']);
+const mark = c => `<i class="mk c-${c}" aria-label="${CLS[c].name}">${CLS[c].sym}</i>`;
+// the big opening book (every named opening), loaded the first time a game is reviewed
+let OBOOK = null;
+const loadBook = () => (OBOOK = OBOOK || import('./book.js').then(m => m.BOOK).catch(() => null));
+// for each move of the game: the name of the opening reached so far, or null once the game has left the book
+function bookPath(me, ob) {
+  if (!ob) return [];
+  const key = s => s.replace(/[+#]/g, '');
+  let node = ob.tree, name = '';
+  const step = s => { node = node && node[key(s)]; if (node && node.$ != null) name = ob.names[node.$]; return node ? name : null; };
+  for (const s of me.pre) step(s);
+  return me.sans.map(step);
+}
+// every position and move in your opening lines, so moves from them count as book moves
+const BOOK = new Map();
+for (const ln of ALL) ln.moves.forEach((san, k) => { const key = fen4(ln.fens[k]) + '|' + san; if (!BOOK.has(key)) BOOK.set(key, ln); });
+// after a move, can the opponent take a knight or more from the side that moved and come out ahead,
+// even counting what that move took? That is a sacrifice. (A piece taken by something cheaper, or taken with nothing able to take back.)
+function sacrifice(fen, took) {
+  const g = new Chess(fen);
+  if (g.isGameOver()) return false;
+  for (const c of g.moves({ verbose: true })) {
+    if (!c.captured || c.captured === 'p') continue;
+    const g2 = new Chess(fen);
+    g2.move(c.san);
+    const back = g2.moves({ verbose: true }).some(r => r.to === c.to);
+    const gain = back ? VAL[c.captured] - VAL[c.piece] : VAL[c.captured];
+    if (gain - took >= 1) return true;
+  }
+  return false;
+}
 function reviewStart() {
   closeSheet();
   const me = G, hist = me.g.history({ verbose: true }), g = new Chess(me.start), fens = [g.fen()];
   for (const m of hist) { g.move(m.san); fens.push(g.fen()); }
-  RV = { side: me.side, start: me.start, fens, sans: hist.map(m => m.san), vm: hist.map(m => ({ from: m.from, to: m.to })), k: fens.length - 1, score: [], best: [], tag: {}, done: false };
+  const from = me.back && me.back.line && me.start !== START ? me.back.line : null;
+  RV = { side: me.side, start: me.start, bot: me.bot, fens, hist, sans: hist.map(m => m.san), vm: hist.map(m => ({ from: m.from, to: m.to })),
+    pre: me.start === START ? [] : from ? byId[from[0]].lines[from[1]].moves.slice(0, from[2]) : null,
+    k: fens.length - 1, score: [], best: [], second: [], secondMove: [], cls: [], loss: [], acc: [], path: [], done: false };
   show(`
-  ${topbar('Game review', 'g-quit', '', `${BOTS[S.bot][0]} level, you played ${me.side === 'w' ? 'White' : 'Black'}`)}
+  ${topbar('Game review', 'g-quit', '', `Against ${me.bot.name} (${me.bot.elo}), you played ${me.side === 'w' ? 'White' : 'Black'}`)}
   <div class="stage"><div id="bd"></div></div>
   <div class="strip" id="mv"></div>
   <div class="pad"><div class="coach" id="note"></div><div id="rvsum"></div></div>
@@ -1639,26 +1851,95 @@ async function rvAnalyse(me) {
     const g = new Chess(me.fens[i]);
     if (g.isCheckmate()) { me.score[i] = { mate: 0 }; continue; }
     if (g.isDraw()) { me.score[i] = { cp: 0 }; continue; }
-    const r = await engine().search(me.fens[i], { movetime: 300 });
+    // the two best moves, so a move that was the only good one can be recognised
+    const r = await engine().search(me.fens[i], { movetime: 500, multipv: 2 });
     me.score[i] = r.score || { cp: 0 };
     me.best[i] = r.best;
+    me.second[i] = r.lines[1] ? r.lines[1].score : null;
+    me.secondMove[i] = r.lines[1] ? r.lines[1].pv[0] : null;
   }
   if (RV !== me) return;
-  const userCp = i => (new Chess(me.fens[i]).turn() === me.side ? 1 : -1) * toCp(me.score[i]);
-  let blunders = 0, mistakes = 0;
-  for (let i = 0; i < me.sans.length; i++) {
-    if (new Chess(me.fens[i]).turn() !== me.side || !me.best[i]) continue;
-    const drop = winP(userCp(i)) - winP(userCp(i + 1));
-    if (drop >= 0.2) { me.tag[i] = 'blunder'; blunders++; } else if (drop >= 0.1) { me.tag[i] = 'mistake'; mistakes++; }
-  }
+  if (me.pre) me.path = bookPath(me, await loadBook());
+  if (RV !== me) return;
+  rvClassify(me);
   me.done = true;
-  const flagged = Object.keys(me.tag).map(Number);
-  const book = me.start === START ? bookText(bookCheck(me.sans, me.side)) : '';
-  $('#rvsum').innerHTML = `
-    <div class="trio flat"><div><b class="${blunders ? 'red' : ''}">${blunders}</b><span>Blunders</span></div><div><b class="${mistakes ? 'gold' : ''}">${mistakes}</b><span>Mistakes</span></div><div><b>${me.sans.filter((_, i) => new Chess(me.fens[i]).turn() === me.side).length}</b><span>Your moves</span></div></div>
-    ${book ? `<p class="book">${book}</p>` : ''}
-    ${flagged.length ? `<h3 class="h3">Moves to look at</h3><div class="group flush">${flagged.map(i => `<div class="brow" role="button" tabindex="0" data-act="rv-go" data-k="${i + 1}"><span class="nota">${moveLabel(startPly(me.start) + i, me.sans[i])}${me.tag[i] === 'blunder' ? '??' : '?'}</span><span class="bn">${me.tag[i] === 'blunder' ? 'Blunder' : 'Mistake'}. Better: ${rvSan(me, i)}</span>${icon('next', 'chev')}</div>`).join('')}</div>` : '<p class="book">No blunders or mistakes. Clean game.</p>'}`;
+  rvSummary(me);
   rvShow();
+}
+// rate every move from the engine's scores; scores are from the point of view of the side to move
+function rvClassify(me) {
+  let inBook = true;
+  me.hist.forEach((m, i) => {
+    const uci = m.from + m.to + (m.promotion || ''), best = me.best[i] === uci;
+    // the engine's best and second-best moves are scored in the same search, which keeps them consistent;
+    // any other move is scored from the position it leads to
+    const before = toCp(me.score[i]);
+    const after = best ? before : me.secondMove[i] === uci ? toCp(me.second[i]) : -toCp(me.score[i + 1]);
+    const wb = winP(before), wa = winP(after), loss = Math.max(0, wb - wa);
+    // accuracy of the move, 0 to 100, from the drop in winning chances (the formula Lichess publishes)
+    me.acc[i] = Math.max(0, Math.min(100, 103.1668 * Math.exp(-0.04354 * loss * 100) - 3.1669));
+    me.loss[i] = loss;
+    let c;
+    if (inBook && (me.path[i] != null || BOOK.has(fen4(me.fens[i]) + '|' + m.san))) c = 'book';
+    else {
+      inBook = false;
+      // great: the only good move, when it isn't an obvious one (taking back, getting out of check,
+      // saving an attacked piece, or simply winning material that can't be taken back)
+      const pos = new Chess(me.fens[i]), them = m.color === 'w' ? 'b' : 'w';
+      const freeTake = m.captured && (VAL[m.captured] >= VAL[m.piece] || !new Chess(me.fens[i + 1]).moves({ verbose: true }).some(r => r.to === m.to));
+      const obvious = (i > 0 && me.hist[i - 1].captured && me.hist[i - 1].to === m.to) || pos.inCheck() || pos.isAttacked(m.from, them) || freeTake;
+      const only = me.second[i] && wb - winP(toCp(me.second[i])) >= 0.2;
+      // brilliant: a sound sacrifice, in a game you weren't already winning easily without it
+      const without = winP(best && me.second[i] ? toCp(me.second[i]) : before);
+      if ((best || loss <= 0.02) && wa >= 0.5 && without < 0.97 && sacrifice(me.fens[i + 1], m.captured ? VAL[m.captured] : 0)) c = 'brilliant';
+      else if (best && only && !obvious && wa >= 0.25 && wb < 0.97) c = 'great';
+      else if (best) c = 'best';
+      else if (loss <= 0.02) c = 'excellent';
+      else if (loss <= 0.05) c = 'good';
+      else if (loss <= 0.1) c = 'inaccuracy';
+      else if (i > 0 && me.loss[i - 1] >= 0.15 && wb >= 0.7 && loss >= 0.12) c = 'miss';   // the other side had just slipped badly, and this let it go
+      else if (loss <= 0.2) c = 'mistake';
+      else c = 'blunder';
+    }
+    me.cls[i] = c;
+  });
+}
+// a side's accuracy for the game: the average of its move accuracies, pulled down by its worst moves
+function rvAccuracy(me, col) {
+  const a = me.hist.map((m, i) => (m.color === col ? me.acc[i] : null)).filter(x => x != null);
+  if (!a.length) return null;
+  const mean = a.reduce((s, x) => s + x, 0) / a.length, harm = a.length / a.reduce((s, x) => s + 1 / Math.max(1, x), 0);
+  return (mean + harm) / 2;
+}
+function rvSummary(me) {
+  const other = me.side === 'w' ? 'b' : 'w', from = startPly(me.start);
+  const count = (c, col) => me.hist.filter((m, i) => m.color === col && me.cls[i] === c).length;
+  const fmt = a => (a == null ? '–' : a.toFixed(1));
+  const rows = Object.keys(CLS).map(c => {
+    const a = count(c, me.side), b = count(c, other);
+    return `<div class="crow${a ? '' : ' none'}"${a ? ` role="button" tabindex="0" data-act="rv-cls" data-id="${c}" aria-label="${CLS[c].name}: ${a}. Show your ${CLS[c].name.toLowerCase()} moves"` : ''}>${mark(c)}<span class="cn">${CLS[c].name}</span><b>${a}</b><b>${b}</b></div>`;
+  }).join('');
+  const look = me.hist.map((m, i) => i).filter(i => me.hist[i].color === me.side && ['mistake', 'miss', 'blunder'].includes(me.cls[i]));
+  const book = me.start === START ? bookText(bookCheck(me.sans, me.side)) : '';
+  const opening = me.path.filter(Boolean).pop();
+  $('#rvsum').innerHTML = `
+    ${opening ? `<p class="opening">${opening}</p>` : ''}
+    <div class="accs"><div><b>${fmt(rvAccuracy(me, me.side))}</b><span>Your accuracy</span></div><div><b>${fmt(rvAccuracy(me, other))}</b><span>${me.bot.name}’s accuracy</span></div></div>
+    <div class="ctab"><div class="chead"><span></span><span></span><span>You</span><span>${me.bot.name}</span></div>${rows}</div>
+    ${book ? `<p class="book">${book}</p>` : ''}
+    ${look.length ? `<h3 class="h3">Moves to look at</h3><div class="group flush">${look.map(i => `<div class="brow" role="button" tabindex="0" data-act="rv-go" data-k="${i + 1}"><span class="nota">${moveLabel(from + i, me.sans[i])} ${mark(me.cls[i])}</span><span class="bn">${CLS[me.cls[i]].name}. Better: ${rvSan(me, i)}</span>${icon('next', 'chev')}</div>`).join('')}</div>`
+      : '<p class="book">No mistakes, misses or blunders. Clean game.</p>'}`;
+}
+// jump to your next move of one kind (the rows of the summary table)
+function rvJump(c) {
+  const me = RV;
+  if (!me || !me.done) return;
+  const idx = me.hist.map((m, i) => i).filter(i => me.hist[i].color === me.side && me.cls[i] === c);
+  const next = idx.find(i => i + 1 > me.k) ?? idx[0];
+  if (next == null) return;
+  me.k = next + 1;
+  rvShow();
+  window.scrollTo({ top: 0, behavior: RM ? 'auto' : 'smooth' });
 }
 function rvSan(me, i) {
   const u = me.best[i];
@@ -1666,27 +1947,35 @@ function rvSan(me, i) {
   const g = new Chess(me.fens[i]), m = g.move({ from: u.slice(0, 2), to: u.slice(2, 4), promotion: u[4] || 'q' });
   return moveLabel(startPly(me.start) + i, m.san);
 }
-function evalText(cp) {
-  if (Math.abs(cp) >= 10000) return cp > 0 ? 'You have a forced mate.' : 'The computer has a forced mate.';
+function evalText(cp, them = 'The computer') {
+  if (Math.abs(cp) >= 10000) return cp > 0 ? 'You have a forced mate.' : `${them} has a forced mate.`;
   if (Math.abs(cp) < 50) return 'The position is about equal.';
-  return `${cp > 0 ? 'You are' : 'The computer is'} ahead by about ${(Math.abs(cp) / 100).toFixed(1)} pawns.`;
+  return `${cp > 0 ? 'You are' : `${them} is`} ahead by about ${(Math.abs(cp) / 100).toFixed(1)} pawns.`;
 }
 function rvShow() {
-  const me = RV, k = me.k, i = k - 1, tag = me.done && i >= 0 ? me.tag[i] : null;
-  const from = startPly(me.start);
-  strip($('#mv'), me.sans.map((s, j) => s + (me.tag[j] === 'blunder' ? '??' : me.tag[j] === 'mistake' ? '?' : '')), k, 'rv-go', from);
-  if (tag && me.best[i]) {
-    // show the position before the mistake, with the better move
+  const me = RV, k = me.k, i = k - 1, c = me.done && i >= 0 ? me.cls[i] : null, from = startPly(me.start);
+  strip($('#mv'), me.sans.map((s, j) => s + (me.done ? mark(me.cls[j]) : '')), k, 'rv-go', from);
+  const m = me.hist[i], mine = m && m.color === me.side, who = mine ? 'Your move.' : `${me.bot.name}’s move.`;
+  if (c && SLIPS.has(c) && me.best[i]) {
+    // show the position before the slip, with the better move
     me.board.set(new Chess(me.fens[i]), { flip: me.side === 'b', last: me.vm[i - 1] || null, arrow: { from: me.best[i].slice(0, 2), to: me.best[i].slice(2, 4) } });
-    coach(tag === 'blunder' ? 'bad' : 'hint', `${moveLabel(from + i, me.sans[i])} was a ${tag}`, `The arrow shows the better move, ${rvSan(me, i)}.`);
+    const missed = c === 'miss' ? (mine ? ` ${me.bot.name} had just slipped, and this let them off the hook.` : ' You had just slipped, and this let you off the hook.') : '';
+    coach(CLS[c].kind, `${moveLabel(from + i, me.sans[i])} is ${CLS[c].say}`, `${who}${missed} Better was ${rvSan(me, i)}, shown by the arrow.`);
     return;
   }
-  me.board.set(new Chess(me.fens[k]), { flip: me.side === 'b', last: me.vm[i] || null });
-  if (k === 0) coach('info', 'Start of the game', me.done ? 'Step through the moves, or tap a move to look at.' : 'The computer is analysing your game.');
-  else if (me.done) {
-    const cp = (new Chess(me.fens[k]).turn() === me.side ? 1 : -1) * toCp(me.score[k]);
-    coach('info', moveLabel(from + i, me.sans[i]), evalText(cp));
-  } else coach('info', moveLabel(from + i, me.sans[i]), 'Analysis in progress…');
+  me.board.set(new Chess(me.fens[k]), { flip: me.side === 'b', last: me.vm[i] || null, badge: c ? { sq: m.to, html: mark(c) } : null });
+  if (k === 0) { coach('info', 'Start of the game', me.done ? 'Step through the moves, or tap a move to look at.' : 'The computer is analysing your game.'); return; }
+  if (!me.done) { coach('info', moveLabel(from + i, me.sans[i]), 'Analysis in progress…'); return; }
+  const cp = (new Chess(me.fens[k]).turn() === me.side ? 1 : -1) * toCp(me.score[k]);
+  const ln = c === 'book' ? BOOK.get(fen4(me.fens[i]) + '|' + me.sans[i]) : null;
+  const why = {
+    brilliant: 'A strong sacrifice.',
+    great: 'The only good move in the position.',
+    excellent: `The best move was ${rvSan(me, i)}.`,
+    good: `The best move was ${rvSan(me, i)}.`,
+    book: `A known opening move${me.path[i] ? `: ${me.path[i]}` : ''}.${ln ? ` It’s in your ${ln.op.name} lines.` : ''}`,
+  }[c] || '';
+  coach(CLS[c].kind, `${moveLabel(from + i, me.sans[i])} is ${CLS[c].say}`, `${who} ${why ? why + ' ' : ''}${evalText(cp, me.bot.name)}`);
 }
 function gBack() {
   const b = G && G.back;
@@ -1736,27 +2025,38 @@ document.addEventListener('click', e => {
     // play the computer
     case 'play': playSheet(START, 'w', { tab }); break;
     case 'play-here': if (V) playSheet(V.ln.fens[V.k], V.op.side, { line: [V.op.id, V.ln.i, V.k] }); break;
-    case 'bot': S.bot = +id; save(); b.parentElement.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); break;
+    case 'bot': S.bot = +id; save(); playSync(); break;
+    case 'g-mode': S.rated = id === 'rated'; save(); playSync(); break;
+    case 'tc': S.tc = +id; save(); playSync(); break;
     case 'bot-side': if (pend) pend.side = id; b.parentElement.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); break;
     case 'g-start': if (pend) playStart(); break;
     case 'g-again': if (pend) playStart(); break;
     case 'g-undo': gUndo(); break;
     case 'g-hint': gHint(); break;
     case 'g-resign':
-      if (G && !G.over) sheet(`<div class="res"><h2>Resign this game?</h2><p class="note">It counts as a loss.</p>
+      if (G && !G.over) sheet(`<div class="res"><h2>Resign this game?</h2><p class="note">${G.rated ? 'It counts as a loss and lowers your rating.' : 'It counts as a loss.'}</p>
         <div class="actions"><button class="btn" data-act="sheet-close">Keep playing</button><button class="btn danger-btn" data-act="g-resign-yes">Resign</button></div></div>`, true);
       break;
     case 'g-resign-yes': closeSheet(); if (G && !G.over) gEnd('l', 'You resigned.'); break;
-    case 'g-anyway': closeSheet(); if (G && G.pending) { G.pending = null; G.movedAt = Date.now(); gTurn(); } break;
+    case 'g-anyway': closeSheet(); if (G && G.pending) { G.pending = null; G.movedAt = Date.now(); clkStop(G); clkAdd(G, G.side); gTurn(); } break;
     case 'g-rethink': closeSheet(); if (G && G.pending) gRethink(); break;
     case 'g-prev': if (G) gGo((G.view ?? G.g.history().length) - 1); break;
     case 'g-next': if (G && G.view != null) gGo(G.view + 1); break;
     case 'g-view': if (G) gGo(+b.dataset.k); break;
     case 'g-live': if (G) gGo(Infinity); break;
-    case 'g-quit': closeSheet(); gBack(); break;
+    case 'g-quit':
+      // leaving a rated game you have started counts as a loss, so ask first
+      if (G && G.rated && !G.over && !RV && G.g.history({ verbose: true }).some(m => m.color === G.side)) {
+        sheet(`<div class="res"><h2>Leave this game?</h2><p class="note">It’s a rated game, so leaving counts as a loss.</p>
+          <div class="actions"><button class="btn" data-act="sheet-close">Keep playing</button><button class="btn danger-btn" data-act="g-leave">Leave</button></div></div>`, true);
+        break;
+      }
+      closeSheet(); gBack(); break;
+    case 'g-leave': closeSheet(); if (G && !G.over) gEnd('l', 'You left the game.'); gBack(); break;
     case 'g-review': if (G && G.g.history().length) reviewStart(); else toast('No moves to review yet'); break;
     case 'rv-go': if (RV) { RV.k = Math.max(0, Math.min(RV.fens.length - 1, +b.dataset.k)); rvShow(); } break;
     case 'rv-step': if (RV) { RV.k = Math.max(0, Math.min(RV.fens.length - 1, RV.k + +b.dataset.k)); rvShow(); } break;
+    case 'rv-cls': rvJump(id); break;
     case 'session': run('session', sessionTasks(), { tab: 'train' }); break;
     case 'learn': run('learn', [{ kind: 'learn', ln: byId[id].lines[li] }], app.classList.contains('has-tabs') ? { tab } : { op: id }); break;
     case 'practice': run('practice', practiceTasks(byId[id]), { op: id }); break;
