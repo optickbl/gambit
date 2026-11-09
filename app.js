@@ -1357,7 +1357,7 @@ function gEnd(res, why) {
   coach(res === 'w' ? 'good' : res === 'l' ? 'bad' : 'info', title, why);
   later(() => sheet(`<div class="res ${res === 'w' ? 'ok' : 'meh'}"><span class="res-ic">${icon(res === 'w' ? 'check' : res === 'l' ? 'flag' : 'restart')}</span><h2>${title}</h2><p class="muted">${why}</p>
     <p class="note">Against the computer: ${S.games.w} won, ${S.games.l} lost, ${S.games.d} drawn.</p>
-    <div class="actions"><button class="btn" data-act="g-quit">Done</button><button class="btn go" data-act="g-again">Play again</button></div></div>`), 700);
+    <div class="actions"><button class="btn" data-act="g-quit">Done</button><button class="btn" data-act="g-review">Review</button><button class="btn go" data-act="g-again">Play again</button></div></div>`), 700);
 }
 function gUndo() {
   const me = G;
@@ -1383,9 +1383,120 @@ function gHint() {
     coach('hint', 'Try this move', 'This is the computer’s suggestion.');
   });
 }
+/* --- game review --- */
+let RV = null;
+const toCp = s => (!s ? 0 : s.mate != null ? (s.mate > 0 ? 10000 : -10000) : s.cp);
+const winP = cp => 1 / (1 + Math.exp(-0.00368208 * Math.max(-1500, Math.min(1500, cp))));
+function bookCheck(sans, side) {
+  let deepest = null;
+  for (let k = 0; k < sans.length; k++) {
+    const opts = new Map();
+    for (const ln of ALL) {
+      if (ln.moves.length <= k) continue;
+      let same = true;
+      for (let i = 0; i < k; i++) if (ln.moves[i] !== sans[i]) { same = false; break; }
+      if (same) { if (!opts.has(ln.moves[k])) opts.set(ln.moves[k], []); opts.get(ln.moves[k]).push(ln); }
+    }
+    if (!opts.size) return { k, deepest, end: true };
+    if (!opts.has(sans[k])) {
+      const mine = (k & 1 ? 'b' : 'w') === side;
+      const rep = mine ? [...opts].map(([s, ls]) => [s, ls.filter(l => l.op.side === side)]).filter(([, ls]) => ls.length) : [];
+      return { k, deepest, mine, played: sans[k], rep };
+    }
+    deepest = opts.get(sans[k])[0];
+  }
+  return { k: sans.length, deepest, all: true };
+}
+function bookText(b) {
+  if (!b.deepest) return 'The game left the lines in this app straight away.';
+  const name = b.deepest.op.name, at = moveLabel(b.k, b.played || '');
+  if (b.all) return `The whole game stayed inside your ${name} lines.`;
+  if (b.end) return `The game followed your ${name} lines right to the end of a line.`;
+  if (b.mine && b.rep.length) return `The game followed your ${name} lines until you played ${at}. Your repertoire move there is ${b.rep.map(([s, ls]) => `${moveLabel(b.k, s)} (${ls[0].op.name})`).join(' or ')}.`;
+  if (b.mine) return `The game followed your ${name} lines until you left them with ${at}.`;
+  return `The game followed your ${name} lines until the computer left them with ${at}.`;
+}
+function reviewStart() {
+  closeSheet();
+  const me = G, hist = me.g.history({ verbose: true }), g = new Chess(me.start), fens = [g.fen()];
+  for (const m of hist) { g.move(m.san); fens.push(g.fen()); }
+  RV = { side: me.side, start: me.start, fens, sans: hist.map(m => m.san), vm: hist.map(m => ({ from: m.from, to: m.to })), k: fens.length - 1, score: [], best: [], tag: {}, done: false };
+  show(`
+  ${topbar('Game review', 'g-quit', '', `${BOTS[S.bot][0]} level, you played ${me.side === 'w' ? 'White' : 'Black'}`)}
+  <div class="stage"><div id="bd"></div></div>
+  <div class="strip" id="mv"></div>
+  <div class="pad"><div class="coach" id="note"></div><div id="rvsum"></div></div>
+  <nav class="dock">
+    <button data-act="rv-go" data-k="0" aria-label="Go to start">${icon('first')}</button>
+    <button data-act="rv-step" data-k="-1" aria-label="Previous move">${icon('back')}</button>
+    <button data-act="rv-step" data-k="1" class="primary" aria-label="Next move">${icon('next')}</button>
+    <button data-act="rv-go" data-k="${fens.length - 1}" aria-label="Go to end">${icon('last')}</button>
+  </nav>`);
+  RV.board = new Board($('#bd'));
+  rvShow();
+  rvAnalyse(RV);
+}
+async function rvAnalyse(me) {
+  for (let i = 0; i < me.fens.length; i++) {
+    if (RV !== me || !me.board.el.isConnected) return;
+    const sum = $('#rvsum');
+    if (sum) sum.innerHTML = `<p class="muted small">Analysing position ${i + 1} of ${me.fens.length}…</p>`;
+    const g = new Chess(me.fens[i]);
+    if (g.isCheckmate()) { me.score[i] = { mate: 0 }; continue; }
+    if (g.isDraw()) { me.score[i] = { cp: 0 }; continue; }
+    const r = await engine().search(me.fens[i], { movetime: 300 });
+    me.score[i] = r.score || { cp: 0 };
+    me.best[i] = r.best;
+  }
+  if (RV !== me) return;
+  const userCp = i => (new Chess(me.fens[i]).turn() === me.side ? 1 : -1) * toCp(me.score[i]);
+  let blunders = 0, mistakes = 0;
+  for (let i = 0; i < me.sans.length; i++) {
+    if (new Chess(me.fens[i]).turn() !== me.side || !me.best[i]) continue;
+    const drop = winP(userCp(i)) - winP(userCp(i + 1));
+    if (drop >= 0.2) { me.tag[i] = 'blunder'; blunders++; } else if (drop >= 0.1) { me.tag[i] = 'mistake'; mistakes++; }
+  }
+  me.done = true;
+  const flagged = Object.keys(me.tag).map(Number);
+  const book = me.start === START ? bookText(bookCheck(me.sans, me.side)) : '';
+  $('#rvsum').innerHTML = `
+    <div class="trio flat"><div><b class="${blunders ? 'red' : ''}">${blunders}</b><span>Blunders</span></div><div><b class="${mistakes ? 'gold' : ''}">${mistakes}</b><span>Mistakes</span></div><div><b>${me.sans.filter((_, i) => new Chess(me.fens[i]).turn() === me.side).length}</b><span>Your moves</span></div></div>
+    ${book ? `<p class="book">${book}</p>` : ''}
+    ${flagged.length ? `<h3 class="h3">Moves to look at</h3><div class="group flush">${flagged.map(i => `<div class="brow" role="button" tabindex="0" data-act="rv-go" data-k="${i + 1}"><span class="nota">${moveLabel(startPly(me.start) + i, me.sans[i])}${me.tag[i] === 'blunder' ? '??' : '?'}</span><span class="bn">${me.tag[i] === 'blunder' ? 'Blunder' : 'Mistake'}. Better: ${rvSan(me, i)}</span>${icon('next', 'chev')}</div>`).join('')}</div>` : '<p class="book">No blunders or mistakes. Clean game.</p>'}`;
+  rvShow();
+}
+function rvSan(me, i) {
+  const u = me.best[i];
+  if (!u) return '';
+  const g = new Chess(me.fens[i]), m = g.move({ from: u.slice(0, 2), to: u.slice(2, 4), promotion: u[4] || 'q' });
+  return moveLabel(startPly(me.start) + i, m.san);
+}
+function evalText(cp) {
+  if (Math.abs(cp) >= 10000) return cp > 0 ? 'You have a forced mate.' : 'The computer has a forced mate.';
+  if (Math.abs(cp) < 50) return 'The position is about equal.';
+  return `${cp > 0 ? 'You are' : 'The computer is'} ahead by about ${(Math.abs(cp) / 100).toFixed(1)} pawns.`;
+}
+function rvShow() {
+  const me = RV, k = me.k, i = k - 1, tag = me.done && i >= 0 ? me.tag[i] : null;
+  const from = startPly(me.start);
+  strip($('#mv'), me.sans.map((s, j) => s + (me.tag[j] === 'blunder' ? '??' : me.tag[j] === 'mistake' ? '?' : '')), k, 'rv-go', from);
+  if (tag && me.best[i]) {
+    // show the position before the mistake, with the better move
+    me.board.set(new Chess(me.fens[i]), { flip: me.side === 'b', last: me.vm[i - 1] || null, arrow: { from: me.best[i].slice(0, 2), to: me.best[i].slice(2, 4) } });
+    coach(tag === 'blunder' ? 'bad' : 'hint', `${moveLabel(from + i, me.sans[i])} was a ${tag}`, `The arrow shows the better move, ${rvSan(me, i)}.`);
+    return;
+  }
+  me.board.set(new Chess(me.fens[k]), { flip: me.side === 'b', last: me.vm[i] || null });
+  if (k === 0) coach('info', 'Start of the game', me.done ? 'Step through the moves, or tap a move to look at.' : 'The computer is analysing your game.');
+  else if (me.done) {
+    const cp = (new Chess(me.fens[k]).turn() === me.side ? 1 : -1) * toCp(me.score[k]);
+    coach('info', moveLabel(from + i, me.sans[i]), evalText(cp));
+  } else coach('info', moveLabel(from + i, me.sans[i]), 'Analysis in progress…');
+}
 function gBack() {
   const b = G && G.back;
   G = null;
+  RV = null;
   if (b && b.line) return lineView(b.line[0], b.line[1], b.line[2]);
   openTab(b && b.tab ? b.tab : 'train');
 }
@@ -1438,6 +1549,9 @@ document.addEventListener('click', e => {
     case 'g-hint': gHint(); break;
     case 'g-resign': if (G && !G.over) gEnd('l', 'You resigned.'); break;
     case 'g-quit': closeSheet(); gBack(); break;
+    case 'g-review': if (G && G.g.history().length) reviewStart(); else toast('No moves to review yet'); break;
+    case 'rv-go': if (RV) { RV.k = Math.max(0, Math.min(RV.fens.length - 1, +b.dataset.k)); rvShow(); } break;
+    case 'rv-step': if (RV) { RV.k = Math.max(0, Math.min(RV.fens.length - 1, RV.k + +b.dataset.k)); rvShow(); } break;
     case 'session': run('session', sessionTasks(), { tab: 'train' }); break;
     case 'learn': run('learn', [{ kind: 'learn', ln: byId[id].lines[li] }], app.classList.contains('has-tabs') ? { tab } : { op: id }); break;
     case 'practice': run('practice', practiceTasks(byId[id]), { op: id }); break;
