@@ -1,4 +1,4 @@
-// Gambit — chess openings trainer
+// Gambit — chess trainer: openings, tactics, endgames and games against the computer
 import { Chess } from './chess.js';
 import { OPENINGS } from './openings.js';
 import { NOTES } from './notes.js';
@@ -83,14 +83,14 @@ function branchText(ln) {
   else while (k < ln.moves.length && ln.moves[k] === base.moves[k]) k++;
   return movesText(ln.moves.slice(k, k + 6), k) + (ln.moves.length > k + 6 ? ' …' : '');
 }
-const findMove = (g, from, to) =>
-  g.moves({ square: from, verbose: true }).find(m => m.to === to && (!m.promotion || m.promotion === 'q'));
+const findMove = (g, from, to, promo = 'q') =>
+  g.moves({ square: from, verbose: true }).find(m => m.to === to && (!m.promotion || m.promotion === promo));
 const shuffle = a => { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
 
 /* ================= saved progress ================= */
 const KEY = 'gambit.v2';
 const FRESH = () => ({ lines: {}, weak: {}, log: {}, xp: 0, pz: {}, prating: 1000, pn: 0, eg: {}, games: { w: 0, l: 0, d: 0 },
-  elo: { r: 800, n: 0, peak: 800, w: 0, l: 0, d: 0, hist: [] }, beat: {} });
+  elo: { r: 800, n: 0, peak: 800, w: 0, l: 0, d: 0, hist: [] }, beat: {}, live: null });
 const S = { ...FRESH(), sound: true, theme: 'green', perDay: 2, bot: 1, warn: true, rated: false, tc: 0 };
 try {
   const saved = localStorage.getItem(KEY);
@@ -254,12 +254,14 @@ const icon = (n, cls = '') => `<svg class="ic ${cls}" viewBox="0 0 24 24" aria-h
 const FILES = 'abcdefgh';
 class Board {
   constructor(el, { mini = false, onMove = null } = {}) {
-    Object.assign(this, { el, mini, onMove, flip: false, g: null, last: null, sel: null, targets: [], hintSq: null, arrow: null, interactive: false, side: null, drag: null });
+    Object.assign(this, { el, mini, onMove, flip: false, g: null, last: null, sel: null, targets: [], hintSq: null, arrow: null, interactive: false, side: null, drag: null, promo: null });
     el.classList.add('board');
+    // a board you move pieces on keeps the page still under your finger; a board you only look at scrolls with the page
+    if (onMove) el.classList.add('play');
     if (mini) el.classList.add('mini'); else this.bind();
   }
   set(g, { flip = this.flip, last = null, arrow = null, badge = null } = {}) {
-    Object.assign(this, { g, flip, last, arrow, badge, sel: null, targets: [], hintSq: null });
+    Object.assign(this, { g, flip, last, arrow, badge, sel: null, targets: [], hintSq: null, promo: null });
     this.render();
   }
   name(r, c) { return FILES[this.flip ? 7 - c : c] + (this.flip ? r + 1 : 8 - r); }
@@ -286,7 +288,19 @@ class Board {
       h += `<div class="${cls}">${inner}</div>`;
     }
     if (this.arrow) h += this.arrowSvg(this.arrow);
+    if (this.promo) h += this.promoHtml(this.promo);
     this.el.innerHTML = h;
+  }
+  // the four pieces a pawn can become, stacked on the promotion square the way chess.com shows them
+  promoHtml({ to }) {
+    const { r, c } = this.pos(to), col = this.g.turn(), up = r > 3;
+    return `<div class="promo"><div class="promo-col${up ? ' up' : ''}" style="left:${c * 12.5}%;top:${(up ? r - 3 : r) * 12.5}%">${['q', 'n', 'r', 'b'].map(t => `<i class="pc ${col}${t.toUpperCase()}" data-promo="${t}" role="button" aria-label="Promote to ${PIECE_NAME[t]}"></i>`).join('')}</div></div>`;
+  }
+  // a move chosen on the board: ask which piece first when it is a promotion
+  commit(from, to, anim) {
+    if (!this.onMove) return;
+    if (this.g.moves({ square: from, verbose: true }).some(m => m.to === to && m.promotion)) { this.promo = { from, to, anim }; this.sel = null; this.targets = []; this.render(); return; }
+    this.onMove(from, to, anim);
   }
   arrowSvg({ from, to }) {
     const a = this.pos(from), b = this.pos(to), f = n => n.toFixed(3);
@@ -295,8 +309,7 @@ class Board {
     const tx = x2 - ux * 0.12, ty = y2 - uy * 0.12, bx = tx - ux * 0.42, by = ty - uy * 0.42;
     return `<svg class="arrow" viewBox="0 0 8 8"><line x1="${f(x1 + ux * 0.2)}" y1="${f(y1 + uy * 0.2)}" x2="${f(bx)}" y2="${f(by)}"/><polygon points="${f(tx)},${f(ty)} ${f(bx + px * 0.26)},${f(by + py * 0.26)} ${f(bx - px * 0.26)},${f(by - py * 0.26)}"/></svg>`;
   }
-  animate(from, to) {
-    if (RM) return;
+  slide(from, to) {
     const cell = this.cell(to), el = cell && cell.querySelector('.pc');
     if (!el) return;
     const a = this.pos(from), b = this.pos(to), s = this.el.clientWidth / 8;
@@ -304,8 +317,18 @@ class Board {
     el.style.transition = 'none';
     el.style.transform = `translate(${(a.c - b.c) * s}px,${(a.r - b.r) * s}px)`;
     el.getBoundingClientRect();
-    el.style.transition = 'transform .18s ease-out';
+    el.style.transition = 'transform .2s cubic-bezier(.2,.8,.2,1)';
     el.style.transform = '';
+  }
+  animate(from, to) {
+    if (RM) return;
+    this.slide(from, to);
+    // castling (or taking it back): the rook slides too
+    const p = this.g && this.g.get(to);
+    if (p && p.type === 'k' && Math.abs(FILES.indexOf(from[0]) - FILES.indexOf(to[0])) === 2) {
+      const castled = from[0] === 'e', k = castled ? to[0] : from[0], [home, next] = k === 'g' ? ['h', 'f'] : ['a', 'd'];
+      if (castled) this.slide(home + to[1], next + to[1]); else this.slide(next + to[1], home + to[1]);
+    }
   }
   flash(sq, cls, ms = 500) { const c = this.cell(sq); if (!c) return; c.classList.add(cls); setTimeout(() => c.classList.remove(cls), ms); }
   shake() { if (RM) return; const e = this.el; e.classList.remove('shake'); void e.offsetWidth; e.classList.add('shake'); setTimeout(() => e.classList.remove('shake'), 350); }
@@ -320,14 +343,21 @@ class Board {
     const el = this.el;
     el.addEventListener('pointerdown', e => {
       audio();
+      if (this.promo) {
+        const pr = this.promo, pick = e.target.closest('[data-promo]');
+        this.promo = null;
+        e.preventDefault();
+        if (pick && this.interactive && this.onMove) this.onMove(pr.from, pr.to, pr.anim, pick.dataset.promo); else this.render();
+        return;
+      }
       if (!this.interactive || !this.g || e.button > 0) return;
       const sq = this.at(e); if (!sq) return;
-      if (this.sel && this.targets.includes(sq)) { const from = this.sel; this.clear(false); this.onMove && this.onMove(from, sq, true); return; }
+      if (this.sel && this.targets.includes(sq)) { const from = this.sel; this.clear(false); this.commit(from, sq, true); return; }
       const p = this.g.get(sq);
       if (p && p.color === this.g.turn() && (!this.side || p.color === this.side)) {
         const was = this.sel === sq;
         this.pick(sq);
-        this.drag = { from: sq, x: e.clientX, y: e.clientY, id: e.pointerId, moved: false, was };
+        this.drag = { from: sq, x: e.clientX, y: e.clientY, id: e.pointerId, moved: false, was, touch: e.pointerType === 'touch', over: null };
         try { el.setPointerCapture(e.pointerId); } catch {}
         e.preventDefault();
         return;
@@ -342,23 +372,29 @@ class Board {
         const src = this.cell(d.from).querySelector('.pc');
         if (src) {
           d.src = src; src.style.opacity = '.3';
-          d.s = (el.clientWidth / 8) * 1.15;
+          // under a finger the piece is drawn bigger and lifted, so you can see where it is going
+          d.s = (el.clientWidth / 8) * (d.touch ? 1.7 : 1.15);
+          d.lift = d.touch ? d.s * 0.55 : 0;
           d.gh = document.createElement('i');
           d.gh.className = src.className + ' ghost';
           d.gh.style.width = d.gh.style.height = d.s + 'px';
           document.body.appendChild(d.gh);
         }
       }
-      if (d.gh) d.gh.style.transform = `translate(${e.clientX - d.s / 2}px,${e.clientY - d.s / 2}px)`;
+      if (d.gh) d.gh.style.transform = `translate(${e.clientX - d.s / 2}px,${e.clientY - d.s / 2 - d.lift}px)`;
+      // ring the square the piece would land on
+      const sq = this.at(e), over = sq && this.targets.includes(sq) ? this.cell(sq) : null;
+      if (over !== d.over) { if (d.over) d.over.classList.remove('over'); if (over) over.classList.add('over'); d.over = over; }
     });
     const end = e => {
       const d = this.drag; if (!d || e.pointerId !== d.id) return;
       this.drag = null;
       if (d.gh) d.gh.remove();
       if (d.src) d.src.style.opacity = '';
+      if (d.over) d.over.classList.remove('over');
       if (!d.moved) { if (d.was) this.clear(); return; }
       const sq = e.type === 'pointercancel' ? null : this.at(e);
-      if (sq && sq !== d.from && this.targets.includes(sq)) { this.clear(false); this.onMove && this.onMove(d.from, sq, false); }
+      if (sq && sq !== d.from && this.targets.includes(sq)) { this.clear(false); this.commit(d.from, sq, false); }
       else if (sq !== d.from) this.clear();
     };
     el.addEventListener('pointerup', end);
@@ -377,10 +413,15 @@ const stopTimers = () => { timers.forEach(clearTimeout); timers = []; };
 let toastT;
 function toast(t) { const e = $('#toast'); e.textContent = t; e.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => e.classList.remove('on'), 1900); }
 
+// where you were on each tab, so coming back to it puts you in the same place
+const tabScroll = {};
+let shownTab = null;
 function show(html, tabs = false) {
   stopTimers();
   closeSheet();
   if (ENG) ENG.stop();
+  if (shownTab) tabScroll[shownTab] = window.scrollY;
+  shownTab = tabs ? tab : null;
   app.innerHTML = html + (tabs ? tabBar() : '');
   app.className = tabs ? 'has-tabs' : html.includes('class="dock') ? 'has-dock' : '';
   if (!RM) { app.classList.remove('enter'); void app.offsetWidth; app.classList.add('enter'); }
@@ -392,19 +433,33 @@ function sheet(html, dismissable = false, top = false) {
   el.className = 'sheet-wrap';
   el.innerHTML = `<div class="scrim"${dismissable ? ' data-act="sheet-close"' : ''}></div><div class="sheet${top ? ' top' : ''}" role="dialog" aria-modal="true">${html}</div>`;
   document.body.appendChild(el);
-  requestAnimationFrame(() => el.classList.add('on'));
+  el.getBoundingClientRect();
+  el.classList.add('on');
 }
-const closeSheet = () => $$('.sheet-wrap').forEach(e => e.remove());
+// a closed sheet slides away before it is removed; its ids go at once so a new sheet can reuse them
+function closeSheet() {
+  for (const e of $$('.sheet-wrap:not(.out)')) {
+    if (RM) { e.remove(); continue; }
+    e.classList.remove('on');
+    e.classList.add('out');
+    for (const x of $$('[id]', e)) x.removeAttribute('id');
+    setTimeout(() => e.remove(), 240);
+  }
+}
+const sheetOpen = () => $('.sheet-wrap:not(.out)');
 const topbar = (title, act, id = '', sub = '', right = '') =>
   `<header class="bar"><button class="iconbtn" data-act="${act}" data-id="${id}" aria-label="Back">${icon('back')}</button><div class="bt"><b>${title}</b>${sub ? `<span>${sub}</span>` : ''}</div>${right || '<span class="sp"></span>'}</header>`;
 const bars = (l, pop = -1) => `<span class="bars${l >= MAX ? ' gold' : ''}" aria-label="Level ${l} of ${MAX}">${Array.from({ length: MAX }, (_, i) => `<i${i < l ? ` class="on${i === pop ? ' pop' : ''}"` : ''}></i>`).join('')}</span>`;
 function ring(p) {
   const r = 17, c = 2 * Math.PI * r, pct = Math.round(p * 100);
-  return `<div class="ring${pct >= 100 ? ' gold' : ''}" aria-label="${pct}% mastered"><svg viewBox="0 0 44 44"><circle cx="22" cy="22" r="${r}" class="rt"/><circle cx="22" cy="22" r="${r}" class="rv" stroke-dasharray="${(c * p).toFixed(1)} ${c.toFixed(1)}"/></svg><span>${pct}<small>%</small></span></div>`;
+  return `<div class="ring${pct >= 100 ? ' gold' : ''}" aria-label="${pct}% done"><svg viewBox="0 0 44 44"><circle cx="22" cy="22" r="${r}" class="rt"/>${p > 0 ? `<circle cx="22" cy="22" r="${r}" class="rv" stroke-dasharray="${(c * p).toFixed(1)} ${c.toFixed(1)}"/>` : ''}</svg><span>${pct}<small>%</small></span></div>`;
 }
 function coach(kind, title, text = '', extra = '') {
   const el = $('#note'); if (!el) return;
+  const changed = el.dataset.t !== title;
+  el.dataset.t = title;
   el.className = 'coach ' + kind;
+  if (changed && !RM) { void el.offsetWidth; el.classList.add('swap'); }
   el.innerHTML = `<div class="ava"><i class="pc wN"></i></div><div class="ct"><b>${title}</b>${text ? `<p>${text}</p>` : ''}${extra}</div>`;
 }
 function strip(el, moves, k, act, from = 0) {
@@ -412,8 +467,10 @@ function strip(el, moves, k, act, from = 0) {
   el.innerHTML = moves.length
     ? moves.map((s, i) => { const ply = i + from; return `${ply & 1 ? (i ? '' : `<span class="no">${(ply + 1) >> 1}...</span>`) : `<span class="no">${(ply >> 1) + 1}.</span>`}<button class="mv${i === k - 1 ? ' cur' : ''}${i >= k ? ' fut' : ''}"${act ? ` data-act="${act}" data-k="${i + 1}"` : ' tabindex="-1"'}>${s}</button>`; }).join('')
     : `<span class="no">${from ? 'No moves yet' : 'Starting position'}</span>`;
-  const cur = el.querySelector('.cur');
-  el.scrollLeft = cur ? cur.offsetLeft - el.clientWidth / 2 + cur.offsetWidth / 2 : 0;
+  const cur = el.querySelector('.cur'), left = cur ? cur.offsetLeft - el.clientWidth / 2 + cur.offsetWidth / 2 : 0;
+  // glide to the current move, except the first time a screen is drawn
+  if (el.dataset.drawn && !RM) el.scrollTo({ left, behavior: 'smooth' }); else el.scrollLeft = left;
+  el.dataset.drawn = 1;
 }
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 function applyTheme() { document.documentElement.dataset.theme = S.theme; }
@@ -422,7 +479,11 @@ function applyTheme() { document.documentElement.dataset.theme = S.theme; }
 let tab = 'train', sideTab = 'w';
 const TABS = [['train', 'target', 'Train'], ['openings', 'book', 'Openings'], ['tactics', 'swords', 'Tactics'], ['endgames', 'crown', 'Endgames'], ['progress', 'chart', 'Progress']];
 const tabBar = () => `<nav class="tabs">${TABS.map(([id, ic, label]) => `<button class="tab${tab === id ? ' on' : ''}" data-act="tab" data-id="${id}"${tab === id ? ' aria-current="page"' : ''}>${icon(ic)}<span>${label}</span></button>`).join('')}</nav>`;
-function openTab(id) { tab = id; ({ train: trainTab, openings: openingsTab, tactics: tacticsTab, endgames: endgamesTab, progress: progressTab })[id](); }
+function openTab(id, keep = false) {
+  tab = id;
+  ({ train: trainTab, openings: openingsTab, tactics: tacticsTab, endgames: endgamesTab, progress: progressTab })[id]();
+  if (keep && tabScroll[id]) window.scrollTo(0, tabScroll[id]);
+}
 
 function row(ic, title, sub, act, id = '') {
   const off = !act;
@@ -467,8 +528,8 @@ function trainTab() {
   <div class="group">
     ${row('shuffle', 'Quick test', c.learned ? '10 positions from lines you have learned' : 'Unlocks after your first line', c.learned ? 'test' : '')}
     ${row('alert', 'Weak moves', weak ? `${plural(weak, 'move')} you keep missing` : 'Moves you miss show up here', weak ? 'weak' : '')}
-    ${row('swords', 'Puzzles', `${pzDue().length ? `${plural(pzDue().length, 'puzzle')} to retry, ` : ''}tactics rating ${S.prating}`, 'pz-mix')}
-    ${row('play', 'Play the computer', S.elo.n ? `Your rating ${S.elo.r}${S.elo.n < 10 ? ', still settling' : ''}, ${S.games.w} won, ${S.games.l} lost, ${S.games.d} drawn`
+    ${row('swords', 'Puzzles', pzDue().length ? `${plural(pzDue().length, 'puzzle')} to retry, tactics rating ${S.prating}` : `Tactics rating ${S.prating}`, 'pz-mix')}
+    ${row('play', 'Play the computer', S.live && BOTS[S.live.bi] ? `Game in progress against ${BOTS[S.live.bi].name}` : S.elo.n ? `Your rating ${S.elo.r}${S.elo.n < 10 ? ', still settling' : ''}, ${S.games.w} won, ${S.games.l} lost, ${S.games.d} drawn`
       : S.games.w + S.games.l + S.games.d ? `${S.games.w} won, ${S.games.l} lost, ${S.games.d} drawn` : 'Use your openings in a real game', 'play')}
     ${row('layers', 'All openings', `${c.learned} of ${ALL.length} lines learned, ${c.mastered} mastered`, 'tab', 'openings')}
   </div>`, true);
@@ -531,8 +592,8 @@ function ratingTile() {
     <svg class="spark" viewBox="0 0 300 44" role="img" aria-label="Rating over the last ${pts.length - 1} rated games, from ${pts[0]} to ${e.r}"><polyline points="${line}"/><circle cx="${x(pts.length - 1).toFixed(1)}" cy="${y(e.r).toFixed(1)}" r="4"/></svg>
     <p class="tn">Best ${e.peak}. ${e.w} won, ${e.l} lost, ${e.d} drawn${e.n < 10 ? `, and it moves faster for your first 10 games` : ''}.${best ? ` Strongest bot beaten: ${best.name} (${best.elo}).` : ''}</p></section>`;
 }
-// redraw Progress after a setting changes, staying where you were on the page
-function settingsChanged() { const y = window.scrollY; progressTab(); app.classList.remove('enter'); window.scrollTo(0, y); }
+const flipSwitch = (b, on) => { b.classList.toggle('on', on); b.setAttribute('aria-checked', on); };
+const choose = b => $$('button', b.parentElement).forEach(x => x.classList.toggle('on', x === b));
 function progressTab() {
   const c = counts(), acc = accuracy(), total = ALL.length, weak = weakList().length;
   const base = noon(), dow = (new Date(base).getDay() + 6) % 7, start = base - (dow + 28) * DAY;
@@ -551,13 +612,13 @@ function progressTab() {
   </section>
   <section class="trio">
     <div><b>${streak()}</b><span>Day streak</span></div>
-    <div><b>${acc == null ? '–' : acc + '%'}</b><span>Accuracy, 7 days</span></div>
+    <div><b>${acc == null ? '–' : acc + '%'}</b><span>Week accuracy</span></div>
     <div><b>${S.xp}</b><span>XP</span></div>
   </section>
   <section class="trio">
     <div><b>${S.prating}</b><span>Tactics rating</span></div>
     <div><b>${PRACTICE.filter(solved).length}</b><span>Puzzles solved</span></div>
-    <div><b>${ENDGAMES.reduce((s, l) => s + egCount(l), 0)}/${ENDGAMES.reduce((s, l) => s + l.fens.length, 0)}</b><span>Endgames done</span></div>
+    <div><b>${ENDGAMES.reduce((s, l) => s + egCount(l), 0)}/${ENDGAMES.reduce((s, l) => s + l.fens.length, 0)}</b><span>Endgames</span></div>
   </section>
   <h2 class="h2">Rated games</h2>
   ${ratingTile()}
@@ -652,8 +713,8 @@ function studyShow(anim) {
     ? `<h3 class="h3">${isMine(ln, k) ? 'You could also play' : `If ${colour(k)} plays something else`}</h3><div class="group flush">${[...br].map(([s, ls]) => `<div class="brow" role="button" tabindex="0" data-act="v-alt" data-li="${ls[0].i}"><span class="nota">${moveLabel(k, s)}</span><span class="bn">${ls[0].name}</span>${icon('next', 'chev')}</div>`).join('')}</div>`
     : '';
 }
-function studyMove(from, to, anim) {
-  const { ln, k } = V, m = findMove(new Chess(ln.fens[k]), from, to);
+function studyMove(from, to, anim, pr) {
+  const { ln, k } = V, m = findMove(new Chess(ln.fens[k]), from, to, pr);
   if (!m) { V.board.render(); return; }
   const br = branches(ln, k);
   if (!br.has(m.san)) {
@@ -753,10 +814,10 @@ function failPly() {
   today().t++; R.stats.t++;
   miss(t.ln, R.k);
 }
-function trainerMove(from, to, anim) {
+function trainerMove(from, to, anim, pr) {
   const t = R && R.task;
   if (!t || !R.board.interactive) return;
-  const ln = t.ln, m = findMove(R.g, from, to);
+  const ln = t.ln, m = findMove(R.g, from, to, pr);
   if (!m) { R.board.render(); return; }
   if (m.san === ln.moves[R.k]) {
     if (t.kind !== 'learn' && !t.fail) { today().t++; today().c++; R.stats.t++; R.stats.c++; hit(ln, R.k); }
@@ -892,7 +953,7 @@ function goBack() {
   const b = R && R.back;
   R = null;
   if (b && b.op) return openingView(b.op);
-  openTab(b && b.tab ? b.tab : 'train');
+  openTab(b && b.tab ? b.tab : 'train', true);
 }
 
 /* --- building training runs --- */
@@ -985,8 +1046,9 @@ function tacticsTab() {
     <button class="btn go big" data-act="pz-mix">Start puzzles</button>
   </section>
   <h2 class="h2">Learn by theme</h2>
-  <div class="group">${THEMES.map(t => { const ps = pzOf(t.key), n = ps.filter(solved).length; return `<div class="orow" role="button" tabindex="0" data-act="tactic" data-id="${t.key}"><div class="ot"><b>${t.name}</b><span class="sub">${n} of ${ps.length} solved</span></div>${ring(n / ps.length)}</div>`; }).join('')}</div>
+  <div class="group">${THEMES.map(t => { const ps = pzOf(t.key), n = ps.filter(solved).length; return `<div class="orow" role="button" tabindex="0" data-act="tactic" data-id="${t.key}"><div class="mb" data-pzmini="${t.key}"></div><div class="ot"><b>${t.name}</b><span class="sub">${n} of ${ps.length} solved</span></div>${ring(n / ps.length)}</div>`; }).join('')}</div>
   <p class="foot">Puzzles come from the Lichess puzzle database.</p>`, true);
+  $$('[data-pzmini]').forEach(el => { const g = new Chess(EXAMPLE[el.dataset.pzmini].fen); new Board(el, { mini: true }).set(g, { flip: g.turn() === 'b' }); });
 }
 let TV = null;
 function themeView(key) {
@@ -1049,9 +1111,9 @@ function nextPuzzle() {
   coach('you', `${side === 'w' ? 'White' : 'Black'} to move`, P.mixed ? 'Find the best move.' : THEME[p.theme].tip);
 }
 const pzMoveObj = () => P.g.moves({ verbose: true }).find(x => x.san === P.p.sol[P.k]);
-function puzzleMove(from, to, anim) {
+function puzzleMove(from, to, anim, pr) {
   if (!P || P.done || !P.board.interactive) return;
-  const p = P.p, m = findMove(P.g, from, to);
+  const p = P.p, m = findMove(P.g, from, to, pr);
   if (!m) { P.board.render(); return; }
   const want = p.sol[P.k], last = P.k === p.sol.length - 1;
   let ok = m.san === want;
@@ -1132,7 +1194,7 @@ function pzBack() {
   const b = P && P.back;
   P = null;
   if (b && b.theme) return themeView(b.theme);
-  openTab(b && b.tab ? b.tab : 'tactics');
+  openTab(b && b.tab ? b.tab : 'tactics', true);
 }
 
 /* ================= endgames ================= */
@@ -1167,7 +1229,7 @@ function egView(id) {
     <ul class="ideas">${l.steps.map(s => `<li>${s}</li>`).join('')}</ul>
     <h3 class="h3">Positions</h3>
     <div class="group flush">${l.fens.map((f, i) => `<div class="brow" role="button" tabindex="0" data-act="eg-play" data-id="${id}" data-li="${i}"><span class="nota">Position ${i + 1}</span><span class="bn">${egDone(l, i) ? `Done in ${plural(S.eg[id][i], 'move')}` : 'Not done yet'}</span>${egDone(l, i) ? icon('check', 'okic') : icon('next', 'chev')}</div>`).join('')}</div>
-    <div class="actions"><button class="btn" data-act="eg-watch" data-id="${id}" data-li="${Math.max(0, next)}">Watch the computer</button><button class="btn go" data-act="eg-play" data-id="${id}" data-li="${Math.max(0, next)}">${next < 0 ? 'Practise again' : 'Practise'}</button></div>
+    <div class="actions"><button class="btn" data-act="eg-watch" data-id="${id}" data-li="${Math.max(0, next)}">Watch it played</button><button class="btn go" data-act="eg-play" data-id="${id}" data-li="${Math.max(0, next)}">${next < 0 ? 'Practise again' : 'Practise'}</button></div>
   </div>`);
   new Board($('#bd')).set(new Chess(l.fens[0]), { flip: l.side === 'b' });
 }
@@ -1216,10 +1278,10 @@ function egFinished() {
   if (l.goal === 'win' && userMoved && onlyKing(g, l.side === 'w' ? 'b' : 'w')) { egWin(); return true; }
   return false;
 }
-function egMove(from, to, anim) {
+function egMove(from, to, anim, pr) {
   const me = E;
   if (!me || me.watch || me.busy || me.over || !me.board.interactive) return;
-  const m = findMove(me.g, from, to);
+  const m = findMove(me.g, from, to, pr);
   if (!m) { me.board.render(); return; }
   me.hist.push(me.g.fen());
   me.g.move(m.san);
@@ -1349,6 +1411,23 @@ const VAL = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
 let G = null, pend = null;
 const gAlive = me => G === me && me.board.el.isConnected;
 const gLast = me => me.g.history({ verbose: true }).pop() || null;
+// the game in progress is saved after every move, so closing the app never loses it
+function gSave(me) {
+  if (me.over) return;
+  S.live = me.g.history({ verbose: true }).some(m => m.color === me.side)
+    ? { start: me.start, side: me.side, bi: me.bi, tc: TCS.indexOf(me.tc), rated: me.rated, sans: me.g.history(), back: me.back,
+      clock: me.clock ? { w: Math.max(0, clkLeft(me, 'w')), b: Math.max(0, clkLeft(me, 'b')) } : null }
+    : null;
+  save();
+}
+// with a game already in progress, offer to carry on with it before starting another
+function playAsk(fen, side, back) {
+  const L = S.live, bot = L && BOTS[L.bi];
+  if (!bot) return playSheet(fen, side, back);
+  pend = { fen, side, back };
+  sheet(`<div class="res"><h2>Game in progress</h2><p class="note">${L.rated ? 'A rated' : 'A casual'} game against ${bot.name} (${bot.elo}), ${plural(Math.ceil(L.sans.length / 2), 'move')} played.${L.rated ? ' Starting a new game counts it as a loss.' : ''}</p>
+    <div class="actions"><button class="btn" data-act="g-new">New game</button><button class="btn go" data-act="g-resume">Resume</button></div></div>`, true);
+}
 function playSheet(fen, side, back) {
   pend = { fen, side, back };
   const fresh = fen === START;
@@ -1358,8 +1437,8 @@ function playSheet(fen, side, back) {
     : '<p class="note">Play on from this position with the side you were learning. It’s a casual game, so your rating stays the same.</p>'}
     <div class="bots" id="pbots">${BOTS.map((b, i) => `<button class="bot" data-act="bot" data-id="${i}" aria-label="${b.name}, rated ${b.elo}"><i class="pc ${b.pc}"></i><b>${b.name}</b><span>${b.elo}</span>${S.beat[i] ? icon('check', 'won') : ''}</button>`).join('')}</div>
     <p class="note" id="pabout"></p>
-    <div class="seg sm wide" id="ptc">${TCS.map((t, i) => `<button data-act="tc" data-id="${i}">${t.label}</button>`).join('')}</div>
-    ${fresh ? `<div class="seg sm wide">${[['w', 'White'], ['b', 'Black']].map(([v, n]) => `<button class="${side === v ? 'on' : ''}" data-act="bot-side" data-id="${v}">${n}</button>`).join('')}</div>` : ''}
+    <span class="lab">Clock</span><div class="seg sm wide" id="ptc">${TCS.map((t, i) => `<button data-act="tc" data-id="${i}">${t.label}</button>`).join('')}</div>
+    ${fresh ? `<span class="lab">Play as</span><div class="seg sm wide">${[['w', 'White'], ['b', 'Black']].map(([v, n]) => `<button class="${side === v ? 'on' : ''}" data-act="bot-side" data-id="${v}">${n}</button>`).join('')}</div>` : ''}
     <div class="actions"><button class="btn" data-act="sheet-close">Cancel</button><button class="btn go" data-act="g-start">Play</button></div></div>`, true);
   playSync(true);
 }
@@ -1374,8 +1453,9 @@ function playSync(scroll) {
   const row = $('#pbots'), on = $('#pbots .bot.on');
   if (scroll && row && on) row.scrollLeft = on.offsetLeft - row.clientWidth / 2 + on.offsetWidth / 2;
 }
-function playStart() {
+function playStart(live = null) {
   closeSheet();
+  if (live) { pend = { fen: live.start, side: live.side, back: live.back }; S.bot = live.bi; S.tc = Math.max(0, live.tc); if (live.start === START) S.rated = live.rated; }
   const { fen, side, back } = pend;
   const bot = BOTS[S.bot], tc = TCS[S.tc] || TCS[0], rated = fen === START && S.rated, opp = side === 'w' ? 'b' : 'w';
   const me = G = { g: new Chess(fen), side, back, start: fen, over: false, view: null, canMove: false, stuck: false, note: null, hint: null,
@@ -1399,7 +1479,11 @@ function playStart() {
   // while you look back, touching the board brings you back to the game
   me.board.el.addEventListener('pointerdown', () => { if (G && G.view != null) gGo(Infinity); });
   soundSide = side;
-  me.board.set(me.g, { flip: side === 'b' });
+  if (live) {
+    try { for (const san of live.sans) me.g.move(san); } catch {}
+    if (me.clock && live.clock) Object.assign(me.clock, { w: live.clock.w, b: live.clock.b });
+  }
+  me.board.set(me.g, { flip: side === 'b', last: gLast(me) });
   if (me.clock) me.tick = setInterval(() => gTick(me), 100);
   gTurn();
 }
@@ -1477,6 +1561,8 @@ function gBars() {
   }
   gTick(me);
 }
+// keep the saved clocks current when the app goes to the background
+document.addEventListener('visibilitychange', () => { if (document.hidden && G && !G.over && !G.pending && S.live) gSave(G); });
 function gNote(me, kind, title, text = '') {
   me.note = [kind, title, text];
   if (me.view == null) coach(kind, title, text);
@@ -1488,6 +1574,7 @@ function gLet(me, on) {
 function gTurn() {
   const me = G;
   if (gOver()) return;
+  gSave(me);
   if (me.g.turn() === me.side) {
     gLet(me, true);
     gNote(me, 'you', 'Your move', me.g.inCheck() ? 'You are in check.' : '');
@@ -1535,10 +1622,10 @@ function gReply(me, r) {
   sfx.move(m);
   gTurn();
 }
-function gMove(from, to, anim) {
+function gMove(from, to, anim, pr) {
   const me = G;
   if (!me || me.over || !me.canMove || me.view != null) return;
-  const m = findMove(me.g, from, to);
+  const m = findMove(me.g, from, to, pr);
   if (!m) { me.board.render(); return; }
   const fen = me.g.fen(), key = `${fen} ${m.san}`;
   me.g.move(m.san);
@@ -1678,6 +1765,7 @@ function gEnd(res, why) {
   // the game is over: show the final position, even if you were looking back
   if (me.view != null) { me.view = null; me.board.set(me.g, { last: gLast(me) }); }
   gLet(me, false);
+  S.live = null;
   S.games[res]++;
   today().n++;
   if (res === 'w') addXP(25);
@@ -1844,10 +1932,13 @@ function reviewStart() {
   rvAnalyse(RV);
 }
 async function rvAnalyse(me) {
+  const sum = $('#rvsum');
+  if (sum) sum.innerHTML = '<div class="wait"><p><span>Analysing your game</span><span id="rvpc">0%</span></p><div class="prog"><i id="rvpg"></i></div></div>';
   for (let i = 0; i < me.fens.length; i++) {
     if (RV !== me || !me.board.el.isConnected) return;
-    const sum = $('#rvsum');
-    if (sum) sum.innerHTML = `<p class="muted small">Analysing position ${i + 1} of ${me.fens.length}…</p>`;
+    const pg = $('#rvpg'), pc = $('#rvpc'), pct = Math.round(((i + 1) / me.fens.length) * 100) + '%';
+    if (pg) pg.style.width = pct;
+    if (pc) pc.textContent = pct;
     const g = new Chess(me.fens[i]);
     if (g.isCheckmate()) { me.score[i] = { mate: 0 }; continue; }
     if (g.isDraw()) { me.score[i] = { cp: 0 }; continue; }
@@ -1911,6 +2002,17 @@ function rvAccuracy(me, col) {
   const mean = a.reduce((s, x) => s + x, 0) / a.length, harm = a.length / a.reduce((s, x) => s + 1 / Math.max(1, x), 0);
   return (mean + harm) / 2;
 }
+// who was winning through the game: the light area is White's share of the winning chances, move by move
+function rvGraph(me) {
+  const n = me.fens.length - 1, W = 300, H = 64;
+  const wp = i => winP((me.fens[i].split(' ')[1] === 'w' ? 1 : -1) * toCp(me.score[i]));
+  const x = i => (i / n) * W, y = i => (1 - wp(i)) * H;
+  const path = `M0,${H} ` + me.fens.map((_, i) => `L${x(i).toFixed(1)},${y(i).toFixed(1)}`).join(' ') + ` L${W},${H} Z`;
+  const dots = me.hist.map((m, i) => (m.color === me.side && ['mistake', 'miss', 'blunder'].includes(me.cls[i])
+    ? `<em class="c-${me.cls[i]}" style="left:${((i + 1) / n * 100).toFixed(2)}%;top:${(y(i + 1) / H * 100).toFixed(2)}%"></em>` : '')).join('');
+  return `<div class="graph" data-act="rv-graph" role="img" aria-label="Who was ahead through the game. Tap to jump to a move.">
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><path class="wh" d="${path}"/><line class="mid" x1="0" y1="${H / 2}" x2="${W}" y2="${H / 2}"/></svg>${dots}<i id="rvcur"></i></div>`;
+}
 function rvSummary(me) {
   const other = me.side === 'w' ? 'b' : 'w', from = startPly(me.start);
   const count = (c, col) => me.hist.filter((m, i) => m.color === col && me.cls[i] === c).length;
@@ -1924,6 +2026,7 @@ function rvSummary(me) {
   const opening = me.path.filter(Boolean).pop();
   $('#rvsum').innerHTML = `
     ${opening ? `<p class="opening">${opening}</p>` : ''}
+    ${rvGraph(me)}
     <div class="accs"><div><b>${fmt(rvAccuracy(me, me.side))}</b><span>Your accuracy</span></div><div><b>${fmt(rvAccuracy(me, other))}</b><span>${me.bot.name}’s accuracy</span></div></div>
     <div class="ctab"><div class="chead"><span></span><span></span><span>You</span><span>${me.bot.name}</span></div>${rows}</div>
     ${book ? `<p class="book">${book}</p>` : ''}
@@ -1955,6 +2058,8 @@ function evalText(cp, them = 'The computer') {
 function rvShow() {
   const me = RV, k = me.k, i = k - 1, c = me.done && i >= 0 ? me.cls[i] : null, from = startPly(me.start);
   strip($('#mv'), me.sans.map((s, j) => s + (me.done ? mark(me.cls[j]) : '')), k, 'rv-go', from);
+  const cur = $('#rvcur');
+  if (cur) cur.style.left = ((k / (me.fens.length - 1)) * 100).toFixed(2) + '%';
   const m = me.hist[i], mine = m && m.color === me.side, who = mine ? 'Your move.' : `${me.bot.name}’s move.`;
   if (c && SLIPS.has(c) && me.best[i]) {
     // show the position before the slip, with the better move
@@ -1982,7 +2087,7 @@ function gBack() {
   G = null;
   RV = null;
   if (b && b.line) return lineView(b.line[0], b.line[1], b.line[2]);
-  openTab(b && b.tab ? b.tab : 'train');
+  openTab(b && b.tab ? b.tab : 'train', true);
 }
 
 /* ================= taps ================= */
@@ -1992,7 +2097,11 @@ document.addEventListener('click', e => {
   audio();
   const a = b.dataset.act, id = b.dataset.id, li = b.dataset.li != null ? +b.dataset.li : 0;
   switch (a) {
-    case 'tab': openTab(id); break;
+    case 'tab':
+      // tapping the tab you are on goes back to the top, like any phone app
+      if (b.classList.contains('tab') && id === tab) window.scrollTo({ top: 0, behavior: RM ? 'auto' : 'smooth' });
+      else openTab(id, true);
+      break;
     case 'side': sideTab = id; openingsTab(); break;
     case 'open': openingView(id); break;
     case 'line': lineView(id, li); break;
@@ -2023,13 +2132,22 @@ document.addEventListener('click', e => {
     case 'eg-restart': if (E) egStart(E.l.id, E.idx); break;
     case 'eg-quit': closeSheet(); egView(id || (E && E.l.id)); break;
     // play the computer
-    case 'play': playSheet(START, 'w', { tab }); break;
-    case 'play-here': if (V) playSheet(V.ln.fens[V.k], V.op.side, { line: [V.op.id, V.ln.i, V.k] }); break;
+    case 'play': playAsk(START, 'w', { tab }); break;
+    case 'play-here': if (V) playAsk(V.ln.fens[V.k], V.op.side, { line: [V.op.id, V.ln.i, V.k] }); break;
     case 'bot': S.bot = +id; save(); playSync(); break;
     case 'g-mode': S.rated = id === 'rated'; save(); playSync(); break;
     case 'tc': S.tc = +id; save(); playSync(); break;
-    case 'bot-side': if (pend) pend.side = id; b.parentElement.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); break;
+    case 'bot-side': if (pend) pend.side = id; choose(b); break;
     case 'g-start': if (pend) playStart(); break;
+    case 'g-resume': if (S.live) playStart(S.live); else closeSheet(); break;
+    case 'g-new': {
+      const L = S.live;
+      if (L && L.rated && BOTS[L.bi]) { S.games.l++; gRate({ bi: L.bi, bot: BOTS[L.bi] }, 'l'); toast('Your rated game was counted as a loss'); }
+      S.live = null; save();
+      if (shownTab) { openTab(tab, true); app.classList.remove('enter'); }   // the tab underneath no longer has a game in progress
+      if (pend) playSheet(pend.fen, pend.side, pend.back);
+      break;
+    }
     case 'g-again': if (pend) playStart(); break;
     case 'g-undo': gUndo(); break;
     case 'g-hint': gHint(); break;
@@ -2051,12 +2169,15 @@ document.addEventListener('click', e => {
           <div class="actions"><button class="btn" data-act="sheet-close">Keep playing</button><button class="btn danger-btn" data-act="g-leave">Leave</button></div></div>`, true);
         break;
       }
+      // a casual game stays saved, clocks and all, so you can pick it up again later
+      if (G && !G.over && !G.pending && S.live) { clkStop(G); gSave(G); }
       closeSheet(); gBack(); break;
     case 'g-leave': closeSheet(); if (G && !G.over) gEnd('l', 'You left the game.'); gBack(); break;
     case 'g-review': if (G && G.g.history().length) reviewStart(); else toast('No moves to review yet'); break;
     case 'rv-go': if (RV) { RV.k = Math.max(0, Math.min(RV.fens.length - 1, +b.dataset.k)); rvShow(); } break;
     case 'rv-step': if (RV) { RV.k = Math.max(0, Math.min(RV.fens.length - 1, RV.k + +b.dataset.k)); rvShow(); } break;
     case 'rv-cls': rvJump(id); break;
+    case 'rv-graph': if (RV) { const r = b.getBoundingClientRect(); RV.k = Math.max(0, Math.min(RV.fens.length - 1, Math.round(((e.clientX - r.left) / r.width) * (RV.fens.length - 1)))); rvShow(); } break;
     case 'session': run('session', sessionTasks(), { tab: 'train' }); break;
     case 'learn': run('learn', [{ kind: 'learn', ln: byId[id].lines[li] }], app.classList.contains('has-tabs') ? { tab } : { op: id }); break;
     case 'practice': run('practice', practiceTasks(byId[id]), { op: id }); break;
@@ -2077,10 +2198,10 @@ document.addEventListener('click', e => {
     case 'v-last': V.k = V.ln.moves.length; studyShow(false); break;
     case 'v-jump': V.k = +b.dataset.k; studyShow(false); break;
     case 'v-alt': sfx.move(V.op.lines[li].vm[V.k]); lineView(V.op.id, li, V.k + 1, true); break;
-    case 'sound': S.sound = !S.sound; save(); settingsChanged(); break;
-    case 'warn': S.warn = !S.warn; save(); settingsChanged(); break;
-    case 'theme': S.theme = id; save(); applyTheme(); settingsChanged(); break;
-    case 'perday': S.perDay = +id; save(); settingsChanged(); break;
+    case 'sound': S.sound = !S.sound; save(); flipSwitch(b, S.sound); break;
+    case 'warn': S.warn = !S.warn; save(); flipSwitch(b, S.warn); break;
+    case 'theme': S.theme = id; save(); applyTheme(); choose(b); break;
+    case 'perday': S.perDay = +id; save(); choose(b); break;
     case 'reset':
       sheet(`<div class="res"><h2>Reset all progress?</h2><p class="note">This clears every learned line, review date, weak move, XP and your streak on this phone. It can't be undone.</p>
         <div class="actions"><button class="btn" data-act="sheet-close">Cancel</button><button class="btn danger-btn" data-act="reset-yes">Reset</button></div></div>`, true);
@@ -2126,7 +2247,8 @@ document.addEventListener('click', e => {
 document.addEventListener('keydown', e => {
   if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('[role="button"]')) { e.preventDefault(); e.target.click(); }
   // arrow keys step through moves on any screen with move arrows
-  if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !$('.sheet-wrap')) {
+  if (e.key === 'Escape') { const sc = $('.sheet-wrap:not(.out) .scrim[data-act]'); if (sc) closeSheet(); }
+  if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !sheetOpen()) {
     const b = $(`.dock [aria-label="${e.key === 'ArrowLeft' ? 'Previous' : 'Next'} move"]`);
     if (b && !b.disabled) { e.preventDefault(); b.click(); }
   }

@@ -1,5 +1,5 @@
 // Network first, so updates show up straight away; falls back to the cache when offline.
-const CACHE = 'gambit-v7';
+const CACHE = 'gambit-v8';
 const SOUNDS = ['move', 'move-opp', 'capture', 'castle', 'check', 'promote', 'illegal'].map(n => `./sounds/${n}.wav`);
 const FILES = ['./', './index.html', './app.js', './openings.js', './notes.js', './chess.js',
   './puzzles.js', './endgames.js', './engine.js', './book.js', './engine/stockfish.wasm.js', './engine/stockfish.wasm', './pieces.css', './manifest.webmanifest', './icon-180.png', './icon-192.png',
